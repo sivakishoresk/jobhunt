@@ -105,6 +105,10 @@ export async function resumeDocx(r: ResumeDoc): Promise<Buffer> {
       if (e.detail) c.push(new Paragraph({ children: runs(e.detail, { size: 19 }) }));
     }
   }
+  if (r.achievements?.length) {
+    c.push(heading('Scholastic Achievements'));
+    r.achievements.forEach((a) => c.push(bullet(a)));
+  }
   if (r.publications.length) {
     c.push(heading('Publications'));
     r.publications.forEach((p) => c.push(bullet(p)));

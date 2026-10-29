@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import type { Profile } from '@/lib/profile';
-import { api, useToast } from './bits';
+import { TagInput, api, useToast } from './bits';
 
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 
@@ -52,7 +52,7 @@ export function ProfileEditor() {
       </p>
       {empty && (
         <p className="notice">
-          Fastest way to fill this in: paste your current resume into a Claude chat with the Jobhunt connector on and say “Fill in my Jobhunt profile from this resume. Copy facts exactly.” Then check the result here.
+          Fastest way to fill this in: paste your current resume into a Claude chat with the Jobhunt connector on and say “Fill in my Jobhunt profile from this resume. Copy facts exactly, put awards and ranks under scholastic achievements, and suggest up to 5 matching job titles.” Then check the result here.
         </p>
       )}
 
@@ -71,6 +71,12 @@ export function ProfileEditor() {
         </div>
         <label className="field" htmlFor="b-sum">Summary</label>
         <textarea id="b-sum" rows={3} value={p.basics.summary} onChange={(e) => basics('summary', e.target.value)} />
+      </section>
+
+      <section>
+        <h2>Job titles to search for</h2>
+        <TagInput id="titles" values={p.jobTitles} onChange={(v) => change((x) => ({ ...x, jobTitles: v }))} placeholder="Machine Learning Engineer" max={5} />
+        <p className="hint">Up to 5. When Claude fills in your profile from a resume it suggests titles that fit; edit them freely. They show up as one-click suggestions when you search for jobs.</p>
       </section>
 
       <section>
@@ -138,10 +144,25 @@ export function ProfileEditor() {
               <div><label className="field">End</label><input type="text" value={e.end} onChange={(ev) => change((x) => ({ ...x, education: x.education.map((y, k) => (k === i ? { ...y, end: ev.target.value } : y)) }))} /></div>
             </div>
             <label className="field">Detail</label>
-            <input type="text" value={e.detail} placeholder="Grade, honours" onChange={(ev) => change((x) => ({ ...x, education: x.education.map((y, k) => (k === i ? { ...y, detail: ev.target.value } : y)) }))} />
+            <input type="text" value={e.detail} placeholder="Grade, specialisation" onChange={(ev) => change((x) => ({ ...x, education: x.education.map((y, k) => (k === i ? { ...y, detail: ev.target.value } : y)) }))} />
           </div>
         ))}
         <button className="btn small" onClick={() => change((x) => ({ ...x, education: [...x.education, { degree: '', school: '', start: '', end: '', detail: '' }] }))}>Add education</button>
+      </section>
+
+      <section>
+        <h2>Scholastic achievements</h2>
+        <p className="hint">Awards, ranks, scholarships, olympiads and other academic honours. Each goes onto a resume word for word.</p>
+        {p.achievements.map((e, i) => (
+          <div className="entry" key={e.id ?? i}>
+            <div className="entry-head">
+              <b>{e.id}</b>
+              <button className="btn small quiet danger" onClick={() => change((x) => ({ ...x, achievements: x.achievements.filter((_, k) => k !== i) }))}>Remove</button>
+            </div>
+            <textarea aria-label="Achievement" rows={2} value={e.text} onChange={(ev) => change((x) => ({ ...x, achievements: x.achievements.map((y, k) => (k === i ? { ...y, text: ev.target.value } : y)) }))} />
+          </div>
+        ))}
+        <button className="btn small" onClick={() => change((x) => ({ ...x, achievements: [...x.achievements, { text: '' }] }))}>Add an achievement</button>
       </section>
 
       <section>

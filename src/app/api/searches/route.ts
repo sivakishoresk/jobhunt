@@ -6,8 +6,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const Body = z.object({
-  keywords: z.string().min(2, 'Enter a role or skills to search for.'),
-  location: z.string().default(''),
+  keywords: z.array(z.string().trim().min(2)).min(1, 'Enter a role or skills to search for.').max(5),
+  location: z.array(z.string().trim()).max(5).default([]),
   remote: z.boolean().default(false),
   days: z.number().int().min(1).max(60).nullable().default(null),
   sources: z.array(z.string()).optional(),

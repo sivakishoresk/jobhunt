@@ -21,6 +21,7 @@ const Resume = z.object({
   experience: z.array(z.object({ title: z.string(), company: z.string(), location: z.string(), start: z.string(), end: z.string(), bullets: z.array(z.string()) })),
   projects: z.array(z.object({ name: z.string(), link: z.string(), start: z.string(), end: z.string(), bullets: z.array(z.string()) })),
   education: z.array(z.object({ degree: z.string(), school: z.string(), start: z.string(), end: z.string(), detail: z.string() })),
+  achievements: z.array(z.string()).default([]),
   publications: z.array(z.string()),
 });
 

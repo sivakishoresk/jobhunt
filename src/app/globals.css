@@ -21,7 +21,7 @@
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #11151a;
     --panel: #161b21;
     --ink: #e6eaed;
@@ -40,6 +40,26 @@
     --sheet-ink: #e9ecef;
   }
 }
+:root[data-theme="dark"] {
+    --paper: #11151a;
+    --panel: #161b21;
+    --ink: #e6eaed;
+    --mute: #a0abb5;
+    --faint: #7b8691;
+    --rule: #28303a;
+    --blue: #8c9bff;
+    --blue-soft: #1e2542;
+    --on-blue: #0d1020;
+    --mark: #8a7a1c;
+    --mark-ink: #fff8d2;
+    --good: #5fcf94;
+    --warn: #e5b45a;
+    --bad: #ff8a80;
+    --sheet: #1b2027;
+    --sheet-ink: #e9ecef;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html { font-size: 15px; }
@@ -70,7 +90,7 @@ h1, h2, h3 { margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
 .nav-links a { color: var(--mute); text-decoration: none; padding: 0.35rem 0.6rem; border-radius: var(--r); font-weight: 500; }
 .nav-links a:hover { color: var(--ink); background: var(--blue-soft); }
 .nav-links a[aria-current="page"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--blue); border-radius: 0; }
-.nav-end { margin-left: auto; }
+.theme-btn { margin-left: auto; min-width: 2rem; justify-content: center; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.75rem; border-radius: var(--r);
@@ -239,3 +259,10 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; backgroun
   .sheet { box-shadow: none; padding: 0; width: 100%; background: #fff; color: #000; }
   .sheet h2 { border-bottom-color: #000; }
 }
+
+/* ---------- tag inputs ---------- */
+.tag-list { display: flex; flex-wrap: wrap; gap: 0.3rem; list-style: none; margin: 0 0 0.35rem; padding: 0; }
+.tag { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.15rem 0.2rem 0.15rem 0.55rem; border-radius: 999px; background: var(--blue-soft); font-size: 0.88rem; }
+.tag button { border: 0; background: transparent; cursor: pointer; color: var(--mute); font-size: 1rem; line-height: 1; padding: 0 0.3rem; border-radius: 999px; }
+.tag button:hover { color: var(--bad); }
+.suggest { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.35rem; }

@@ -51,6 +51,8 @@ async function searchReport(sv: SearchView, includeJobs = true) {
     status: sv.status,
     sources: sv.runs.map((r) => ({
       source: r.source,
+      role: r.keywords,
+      location: r.location,
       status: r.status,
       found: r.found,
       new: r.added,
@@ -79,7 +81,7 @@ export function createMcpServer(base: string): McpServer {
     {
       title: 'Read my profile',
       description:
-        "Returns the user's career profile (summary, skills, experience, projects, education, publications) with stable ids such as exp-1 and proj-2. Contact details and links are not included. Read this before scoring jobs or writing any resume or cover letter.",
+        "Returns the user's career profile (summary, skills, experience, projects, education, scholastic achievements, publications, suggested job titles) with stable ids such as exp-1 and proj-2. Contact details and links are not included. Read this before scoring jobs or writing any resume or cover letter.",
       inputSchema: {},
       annotations: readOnly,
     },
@@ -97,7 +99,7 @@ export function createMcpServer(base: string): McpServer {
     {
       title: 'Update my profile',
       description:
-        'Replaces whole sections of the profile with the data given (omitted sections are left alone). Use it to turn a pasted resume into a structured profile. Copy facts exactly; do not embellish. Keep existing ids when editing entries so saved drafts still match. Dates are free text like "Jun 2024" and end can be "Present".',
+        'Replaces whole sections of the profile with the data given (omitted sections are left alone). Use it to turn a pasted resume into a structured profile. Copy facts exactly; do not embellish. Put awards, ranks, scholarships, olympiads and similar academic honours in achievements, not in an education detail. Also set jobTitles to up to 5 job titles that realistically match the resume (most fitting first; titles only, no companies). Keep existing ids when editing entries so saved drafts still match. Dates are free text like "Jun 2024" and end can be "Present".',
       inputSchema: ProfilePatchSchema.shape,
       annotations: { ...write, idempotentHint: false },
     },
@@ -116,10 +118,10 @@ export function createMcpServer(base: string): McpServer {
     {
       title: 'Search for jobs',
       description:
-        'Starts a job search across the enabled Apify sources (LinkedIn, Y Combinator) and waits up to about 40 seconds. If a source is still running it tells you; then call get_search with the search_id a bit later. Each search starts paid Apify runs, so check list_jobs first and avoid repeating the same search. Location defaults to the profile location.',
+        'Starts a job search (any number of roles and locations, up to 5 each) across the enabled Apify sources (LinkedIn, Y Combinator) and waits up to about 40 seconds. If a source is still running it tells you; then call get_search with the search_id a bit later. Each search starts paid Apify runs, so check list_jobs first and avoid repeating the same search. Location defaults to the profile location. Roles x locations multiplies the paid runs, so keep both lists short.',
       inputSchema: {
-        keywords: z.string().min(2).describe('Role or skills, e.g. "machine learning engineer"'),
-        location: z.string().optional().describe('City or country. Defaults to the profile location.'),
+        keywords: z.array(z.string().min(2)).min(1).max(5).describe('One or more roles or skills, e.g. ["machine learning engineer", "data scientist"]. Each is searched separately.'),
+        location: z.array(z.string()).max(5).optional().describe('One or more cities or countries. Defaults to the profile location.'),
         remote_only: z.boolean().optional(),
         posted_within_days: z.number().int().min(1).max(60).optional(),
         sources: z.array(z.string()).optional().describe('Source ids to use, e.g. ["linkedin"]. Defaults to all enabled sources.'),
@@ -131,7 +133,7 @@ export function createMcpServer(base: string): McpServer {
         const profile = await getProfile();
         let sv = await startSearch({
           keywords: a.keywords,
-          location: a.location ?? profile.basics.location ?? '',
+          location: a.location?.length ? a.location : [profile.basics.location ?? ''],
           remote: !!a.remote_only,
           days: a.posted_within_days ?? null,
           sources: a.sources,

@@ -1,12 +1,40 @@
 import { z } from 'zod';
 import { kvGet, kvSet } from './db';
 
-export interface SearchQuery {
+/** One scraper run: a single role and a single place. */
+export interface RunQuery {
   keywords: string;
   location: string;
   remote: boolean;
   days: number | null;
+}
+
+/** What the user asks for: any number of roles and places. Older saved searches hold plain strings. */
+export interface SearchQuery {
+  keywords: string | string[];
+  location: string | string[];
+  remote: boolean;
+  days: number | null;
   sources?: string[];
+}
+
+export const MAX_TERMS = 5;
+export const MAX_RUNS = 24;
+
+export const asList = (v: string | string[] | undefined): string[] => {
+  const seen = new Set<string>();
+  return (Array.isArray(v) ? v : [v ?? ''])
+    .map((x) => x.trim())
+    .filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+};
+
+/** Every role x place pair. No place means one unrestricted run per role. */
+export function runQueries(q: SearchQuery): RunQuery[] {
+  const roles = asList(q.keywords);
+  const places = asList(q.location);
+  return roles.flatMap((keywords) =>
+    (places.length ? places : ['']).map((location) => ({ keywords, location, remote: q.remote, days: q.days })),
+  );
 }
 
 export const SourceSchema = z.object({
@@ -101,7 +129,7 @@ export async function saveSources(sources: unknown): Promise<SourceConfig[]> {
 
 // ---- input templates ----
 
-export function linkedinSearchUrl(q: SearchQuery): string {
+export function linkedinSearchUrl(q: RunQuery): string {
   const p = new URLSearchParams();
   if (q.keywords) p.set('keywords', q.keywords);
   if (q.location) p.set('location', q.location);
@@ -113,7 +141,7 @@ export function linkedinSearchUrl(q: SearchQuery): string {
   return `https://www.linkedin.com/jobs/search/?${p.toString()}`;
 }
 
-export function renderInput(template: unknown, q: SearchQuery, maxResults: number): unknown {
+export function renderInput(template: unknown, q: RunQuery, maxResults: number): unknown {
   const vars: Record<string, unknown> = {
     keywords: q.keywords,
     location: q.location,

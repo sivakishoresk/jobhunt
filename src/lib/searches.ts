@@ -1,7 +1,7 @@
 import { q, type Row } from './db';
 import { newId, errMessage, truncate } from './util';
 import { j } from './db';
-import { getSources, renderInput, type SearchQuery } from './sources';
+import { getSources, renderInput, runQueries, MAX_RUNS, MAX_TERMS, asList, type SearchQuery } from './sources';
 import { startRun, getRun, getItems, TERMINAL_FAIL, ApifyError } from './apify';
 import { normalizeItem, matchesKeywords, type NormJob } from './normalize';
 import { iso, listJobs, upsertJobs } from './jobs';
@@ -12,6 +12,8 @@ export interface RunView {
   id: string;
   source: string;
   actor: string;
+  keywords: string;
+  location: string;
   status: 'running' | 'ingesting' | 'done' | 'failed';
   error: string | null;
   found: number;
@@ -34,6 +36,8 @@ function mapRun(r: Row): RunView {
     id: r.id,
     source: r.source,
     actor: r.actor,
+    keywords: r.kw ?? '',
+    location: r.loc ?? '',
     status: r.status,
     error: r.error ?? null,
     found: r.found ?? 0,
@@ -45,28 +49,36 @@ function mapRun(r: Row): RunView {
 export async function startSearch(query: SearchQuery): Promise<SearchView> {
   const sources = (await getSources()).filter((s) => s.enabled && (!query.sources?.length || query.sources.includes(s.id)));
   if (!sources.length) throw new Error('No sources are enabled. Turn one on in Settings → Sources.');
+  if (!asList(query.keywords).length) throw new Error('Enter a role or skills to search for.');
+  if (asList(query.keywords).length > MAX_TERMS || asList(query.location).length > MAX_TERMS)
+    throw new Error(`Use at most ${MAX_TERMS} roles and ${MAX_TERMS} places per search.`);
+  const combos = runQueries(query);
+  if (combos.length * sources.length > MAX_RUNS)
+    throw new Error(`That would start ${combos.length * sources.length} paid runs (roles × places × sources). The limit is ${MAX_RUNS}; trim the lists.`);
   const searchId = newId('s');
   await q('INSERT INTO searches (id, query) VALUES ($1, $2::jsonb)', [searchId, j(query)]);
 
   await Promise.all(
-    sources.map(async (s) => {
-      const runId = newId('r');
-      try {
-        const input = renderInput(s.input, query, s.maxResults);
-        const run = await startRun(s.actor, input);
-        await q(
-          `INSERT INTO search_runs (id, search_id, source, actor, apify_run_id, dataset_id, status)
-           VALUES ($1,$2,$3,$4,$5,$6,'running')`,
-          [runId, searchId, s.id, s.actor, run.id, run.datasetId],
-        );
-      } catch (e) {
-        await q(
-          `INSERT INTO search_runs (id, search_id, source, actor, status, error, finished_at)
-           VALUES ($1,$2,$3,$4,'failed',$5, now())`,
-          [runId, searchId, s.id, s.actor, truncate(errMessage(e), 600)],
-        );
-      }
-    }),
+    sources.flatMap((s) =>
+      combos.map(async (c) => {
+        const runId = newId('r');
+        try {
+          const input = renderInput(s.input, c, s.maxResults);
+          const run = await startRun(s.actor, input);
+          await q(
+            `INSERT INTO search_runs (id, search_id, source, actor, apify_run_id, dataset_id, status, kw, loc)
+             VALUES ($1,$2,$3,$4,$5,$6,'running',$7,$8)`,
+            [runId, searchId, s.id, s.actor, run.id, run.datasetId, c.keywords, c.location],
+          );
+        } catch (e) {
+          await q(
+            `INSERT INTO search_runs (id, search_id, source, actor, status, error, finished_at, kw, loc)
+             VALUES ($1,$2,$3,$4,'failed',$5, now(), $6, $7)`,
+            [runId, searchId, s.id, s.actor, truncate(errMessage(e), 600), c.keywords, c.location],
+          );
+        }
+      }),
+    ),
   );
   return advanceSearch(searchId);
 }
@@ -81,7 +93,7 @@ async function ingestRun(run: Row, query: SearchQuery, localFilter: boolean, sea
       const n = normalizeItem(run.source, it);
       if (n) jobs.push(n);
     }
-    const kept = localFilter ? jobs.filter((x) => matchesKeywords(x, query.keywords)) : jobs;
+    const kept = localFilter ? jobs.filter((x) => matchesKeywords(x, run.kw ?? asList(query.keywords).join(' '))) : jobs;
     const res = await upsertJobs(searchId, kept);
     await q(`UPDATE search_runs SET status = 'done', found = $2, added = $3, finished_at = now() WHERE id = $1`, [
       run.id,

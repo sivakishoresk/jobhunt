@@ -213,7 +213,7 @@ async function main() {
   let searchId, jobs;
   await step('search_jobs runs both sources and waits for results', async () => {
     const t0 = Date.now();
-    const r = await call('search_jobs', { keywords: 'machine learning engineer', location: 'Bengaluru', posted_within_days: 7 });
+    const r = await call('search_jobs', { keywords: ['machine learning engineer'], location: ['Bengaluru'], posted_within_days: 7 });
     ok(!r.isError, JSON.stringify(r.data));
     searchId = r.data.search_id;
     eq(r.data.status, 'done', 'search should be done: ' + JSON.stringify(r.data.sources));
@@ -245,7 +245,7 @@ async function main() {
     ok(r.data.total > 0 && r.data.total <= 10, 'yc total ' + r.data.total);
   });
   await step('searching again finds no new rows (dedupe across searches)', async () => {
-    const r = await call('search_jobs', { keywords: 'machine learning engineer', location: 'Bengaluru', sources: ['linkedin'] });
+    const r = await call('search_jobs', { keywords: ['machine learning engineer'], location: ['Bengaluru'], sources: ['linkedin'] });
     eq(r.data.status, 'done');
     eq(r.data.sources[0].new, 0, 'second search should add nothing');
   });
@@ -360,7 +360,7 @@ async function main() {
     const add = (id, actor) => ({ id, label: id, enabled: true, preset: 'custom', actor, input: { q: '{{keywords}}' }, maxResults: 5, localKeywordFilter: false });
     const put = await web('/api/sources', { method: 'PUT', body: JSON.stringify([...cur.map((s) => ({ ...s, enabled: false })), add('failx', 'fail/x'), add('gone', 'missing/x'), add('paid', 'rental/x'), add('slow', 'slow/x')]) });
     eq(put.status, 200);
-    const r = await call('search_jobs', { keywords: 'anything', sources: ['failx', 'gone', 'paid', 'slow'] });
+    const r = await call('search_jobs', { keywords: ['anything'], sources: ['failx', 'gone', 'paid', 'slow'] });
     const by = Object.fromEntries(r.data.sources.map((s) => [s.source, s]));
     eq(by.slow.status, 'running');
     ok(r.data.note.includes('get_search'), 'should tell Claude to poll');
@@ -481,8 +481,8 @@ async function browserTests(cookie, appId) {
     await page.selectOption('select[aria-label="Sort"]', 'newest');
   });
   await step('searching from the page shows progress, then new rows', async () => {
-    await page.fill('#kw', 'nlp engineer');
-    await page.fill('#loc', 'Hyderabad');
+    await page.fill('#kw', 'nlp engineer'); await page.press('#kw', 'Enter');
+    await page.fill('#loc', 'Hyderabad'); await page.press('#loc', 'Enter');
     await page.click('button:has-text("Search")');
     await page.waitForSelector('.runs li');
     await shot('05-searching');

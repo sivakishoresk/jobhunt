@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 const LINKS = [
   { href: '/', label: 'Jobs' },
@@ -8,6 +9,34 @@ const LINKS = [
   { href: '/profile', label: 'Profile' },
   { href: '/settings', label: 'Settings' },
 ];
+
+type Theme = 'light' | 'dark';
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme | null>(null);
+  useEffect(() => {
+    const set = document.documentElement.dataset.theme;
+    setTheme(set === 'light' || set === 'dark' ? set : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  }, []);
+  if (!theme) return <span className="theme-btn" aria-hidden />;
+  const next: Theme = theme === 'dark' ? 'light' : 'dark';
+  return (
+    <button
+      className="btn quiet small theme-btn"
+      aria-label={`Switch to ${next} theme`}
+      title={`Switch to ${next} theme`}
+      onClick={() => {
+        document.documentElement.dataset.theme = next;
+        try {
+          localStorage.setItem('jh.theme', next);
+        } catch {}
+        setTheme(next);
+      }}
+    >
+      {theme === 'dark' ? '☀' : '☾'}
+    </button>
+  );
+}
 
 export function Nav() {
   const path = usePathname();
@@ -24,8 +53,9 @@ export function Nav() {
           </Link>
         ))}
       </nav>
+      <ThemeToggle />
       <button
-        className="btn quiet small nav-end"
+        className="btn quiet small"
         onClick={async () => {
           await fetch('/api/logout', { method: 'POST' });
           window.location.href = '/login';

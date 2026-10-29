@@ -76,3 +76,58 @@ export async function api<T = any>(url: string, init?: RequestInit & { json?: un
 }
 
 export { renderBold } from '../lib/bold';
+
+/** Type a value and press Enter or comma to add it; click a chip's x to remove it. */
+export function TagInput({
+  id, values, onChange, placeholder, max = 5, suggestions = [],
+}: {
+  id: string; values: string[]; onChange: (v: string[]) => void; placeholder?: string; max?: number; suggestions?: string[];
+}) {
+  const [draft, setDraft] = useState('');
+  const has = (v: string) => values.some((x) => x.toLowerCase() === v.toLowerCase());
+  const add = (raw: string) => {
+    const parts = raw.split(',').map((x) => x.trim()).filter((x) => x && !has(x));
+    if (parts.length) onChange([...values, ...parts].slice(0, max));
+    setDraft('');
+  };
+  const open = suggestions.filter((x) => !has(x));
+  return (
+    <div className="tags">
+      {values.length > 0 && (
+        <ul className="tag-list">
+          {values.map((v) => (
+            <li key={v} className="tag">
+              {v}
+              <button type="button" aria-label={`Remove ${v}`} onClick={() => onChange(values.filter((x) => x !== v))}>×</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {values.length < max ? (
+        <input
+          id={id}
+          type="text"
+          value={draft}
+          placeholder={values.length ? 'Add another…' : placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault();
+              add(draft);
+            } else if (e.key === 'Backspace' && !draft && values.length) onChange(values.slice(0, -1));
+          }}
+          onBlur={() => draft.trim() && add(draft)}
+        />
+      ) : (
+        <p className="hint">Up to {max}.</p>
+      )}
+      {values.length < max && open.length > 0 && (
+        <div className="suggest" role="group" aria-label="Suggestions">
+          {open.slice(0, max).map((x) => (
+            <button type="button" key={x} className="chip" onClick={() => add(x)}>+ {x}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

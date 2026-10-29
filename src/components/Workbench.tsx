@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { JobSummary, JobFull, JobState } from '@/lib/jobs';
 import type { SearchView } from '@/lib/searches';
-import { Highlight, Meter, api, timeAgo, tokens, useToast } from './bits';
+import { Highlight, Meter, TagInput, api, timeAgo, tokens, useToast } from './bits';
 
 type Tab = 'inbox' | 'saved' | 'applied' | 'dismissed' | 'all';
 type Sort = 'newest' | 'score' | 'company';
@@ -11,6 +11,15 @@ const TAB_STATE: Record<Exclude<Tab, 'all'>, JobState> = { inbox: 'new', saved: 
 const TAB_LABEL: Record<Tab, string> = { inbox: 'Inbox', saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed', all: 'All' };
 
 const claudeLink = (prompt: string) => `https://claude.ai/new?q=${encodeURIComponent(prompt)}`;
+
+function lsList(key: string): string[] {
+  try {
+    const v = JSON.parse(ls(key) || '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 function ls(key: string, value?: string): string {
   try {
@@ -43,8 +52,9 @@ export function Workbench() {
   const undoRef = useRef<{ id: string; prev: JobState } | null>(null);
 
   // search form
-  const [kw, setKw] = useState('');
-  const [loc, setLoc] = useState('');
+  const [kw, setKw] = useState<string[]>([]);
+  const [loc, setLoc] = useState<string[]>([]);
+  const [titleIdeas, setTitleIdeas] = useState<string[]>([]);
   const [remote, setRemote] = useState(false);
   const [days, setDays] = useState(7);
   const [sources, setSources] = useState<{ id: string; label: string; enabled: boolean }[]>([]);
@@ -70,8 +80,8 @@ export function Workbench() {
 
   useEffect(() => {
     loadJobs();
-    setKw(ls('jh.kw'));
-    setLoc(ls('jh.loc'));
+    setKw(lsList('jh.kw2'));
+    setLoc(lsList('jh.loc2'));
     api<{ sources: any[]; apifyTokenSet: boolean }>('/api/sources')
       .then((r) => {
         setSources(r.sources);
@@ -79,9 +89,10 @@ export function Workbench() {
         setApifyOk(r.apifyTokenSet);
       })
       .catch(() => {});
-    api<{ basics: { location: string; headline: string } }>('/api/profile')
+    api<{ basics: { location: string; headline: string }; jobTitles?: string[] }>('/api/profile')
       .then((p) => {
-        if (!ls('jh.loc')) setLoc(p.basics.location ?? '');
+        if (!ls('jh.loc2') && p.basics.location) setLoc([p.basics.location]);
+        setTitleIdeas(p.jobTitles ?? []);
       })
       .catch(() => {});
   }, [loadJobs]);
@@ -89,19 +100,19 @@ export function Workbench() {
   // ---------- searching ----------
   async function runSearch(e?: React.FormEvent) {
     e?.preventDefault();
-    if (kw.trim().length < 2) {
+    if (!kw.length) {
       setSearchError('Enter a role or skills to search for.');
       return;
     }
     setSearchError('');
     setStarting(true);
-    ls('jh.kw', kw);
-    ls('jh.loc', loc);
-    lastKeywords.current = kw;
+    ls('jh.kw2', JSON.stringify(kw));
+    ls('jh.loc2', JSON.stringify(loc));
+    lastKeywords.current = kw.join(' ');
     try {
       const sv = await api<SearchView>('/api/searches', {
         method: 'POST',
-        json: { keywords: kw.trim(), location: loc.trim(), remote, days: days || null, sources: [...pickedSources] },
+        json: { keywords: kw, location: loc, remote, days: days || null, sources: [...pickedSources] },
       });
       setSearch(sv);
     } catch (err) {
@@ -326,13 +337,18 @@ export function Workbench() {
         )}
         <form onSubmit={runSearch}>
           <label className="field" htmlFor="kw" style={{ marginTop: 0 }}>
-            Role or skills
+            Roles or skills
           </label>
-          <input id="kw" type="text" value={kw} onChange={(e) => setKw(e.target.value)} placeholder="machine learning engineer" />
+          <TagInput id="kw" values={kw} onChange={setKw} placeholder="machine learning engineer" suggestions={titleIdeas} />
           <label className="field" htmlFor="loc">
-            Place
+            Places
           </label>
-          <input id="loc" type="text" value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="Bangalore, India" />
+          <TagInput id="loc" values={loc} onChange={setLoc} placeholder="Bangalore, India" />
+          {kw.length * Math.max(1, loc.length) > 1 && (
+            <p className="hint">
+              {kw.length * Math.max(1, loc.length)} searches per source (every role in every place).
+            </p>
+          )}
           <label className="field" htmlFor="days">
             Posted
           </label>
@@ -384,7 +400,8 @@ export function Workbench() {
           <ul className="runs" aria-live="polite">
             {search.runs.map((r) => (
               <li key={r.id}>
-                <span className="st">{sources.find((s) => s.id === r.source)?.label ?? r.source}</span>{' '}
+                <span className="st">{sources.find((s) => s.id === r.source)?.label ?? r.source}</span>
+                {(r.keywords || r.location) && <span className="hint"> · {[r.keywords, r.location].filter(Boolean).join(' in ')}</span>}{' '}
                 {r.status === 'running' || r.status === 'ingesting' ? (
                   <span>running… {elapsed(r.started_at)}</span>
                 ) : r.status === 'done' ? (

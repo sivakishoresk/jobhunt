@@ -78,6 +78,16 @@ export function ResumeSheet({ doc }: { doc: ResumeDoc }) {
           ))}
         </>
       )}
+      {(doc.achievements?.length ?? 0) > 0 && (
+        <>
+          <h2>Scholastic Achievements</h2>
+          <ul>
+            {doc.achievements.map((a, i) => (
+              <li key={i}>{renderBold(a)}</li>
+            ))}
+          </ul>
+        </>
+      )}
       {doc.publications.length > 0 && (
         <>
           <h2>Publications</h2>

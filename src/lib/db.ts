@@ -32,6 +32,8 @@ const SCHEMA: string[] = [
      started_at timestamptz NOT NULL DEFAULT now(),
      finished_at timestamptz
    )`,
+  `ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS kw text`,
+  `ALTER TABLE search_runs ADD COLUMN IF NOT EXISTS loc text`,
   `CREATE INDEX IF NOT EXISTS search_runs_search_idx ON search_runs(search_id)`,
   `CREATE TABLE IF NOT EXISTS jobs (
      id text PRIMARY KEY,

@@ -30,6 +30,7 @@ export const EducationSchema = z.object({
   detail: sd,
 });
 export const PublicationSchema = z.object({ id: z.string().optional(), citation: s.min(1) });
+export const AchievementSchema = z.object({ id: z.string().optional(), text: s.min(1) });
 export const BasicsSchema = z.object({
   name: sd,
   headline: sd,
@@ -46,7 +47,9 @@ export const ProfileSchema = z.object({
   experience: z.array(ExperienceSchema).default([]),
   projects: z.array(ProjectSchema).default([]),
   education: z.array(EducationSchema).default([]),
+  achievements: z.array(AchievementSchema).default([]),
   publications: z.array(PublicationSchema).default([]),
+  jobTitles: z.array(s.min(1)).max(5).default([]),
 });
 export type Profile = z.infer<typeof ProfileSchema>;
 
@@ -56,10 +59,12 @@ export const ProfilePatchSchema = z.object({
   experience: z.array(ExperienceSchema).optional(),
   projects: z.array(ProjectSchema).optional(),
   education: z.array(EducationSchema).optional(),
+  achievements: z.array(AchievementSchema).optional(),
   publications: z.array(PublicationSchema).optional(),
+  jobTitles: z.array(s.min(1)).max(5).optional().describe('Up to 5 job titles that fit this profile, used to search for jobs.'),
 });
 
-const PREFIX = { experience: 'exp', projects: 'proj', education: 'edu', publications: 'pub' } as const;
+const PREFIX = { experience: 'exp', projects: 'proj', education: 'edu', achievements: 'ach', publications: 'pub' } as const;
 
 function withIds<T extends { id?: string }>(items: T[], prefix: string): (T & { id: string })[] {
   const used = new Set(items.map((i) => i.id).filter(Boolean) as string[]);
@@ -79,6 +84,7 @@ export function assignIds(p: Profile): Profile {
     experience: withIds(p.experience, PREFIX.experience),
     projects: withIds(p.projects, PREFIX.projects),
     education: withIds(p.education, PREFIX.education),
+    achievements: withIds(p.achievements, PREFIX.achievements),
     publications: withIds(p.publications, PREFIX.publications),
   };
 }
