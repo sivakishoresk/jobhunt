@@ -545,7 +545,7 @@ async function browserTests(cookie, appId) {
     await page.waitForURL(`${BASE}/`);
   });
   await step('the Jobs page opens on the latest search and lists past searches', async () => {
-    await page.waitForSelector('.scope b');
+    await page.waitForFunction(() => document.querySelectorAll('.past-item').length >= 4 && document.querySelector('.scope h1')?.textContent !== 'All jobs');
     ok((await page.locator('.past-item').count()) >= 4, 'All jobs plus the searches');
     eq(await page.locator('.past-item[aria-current=true]').count(), 1);
     ok(/ml engineer/i.test(await page.locator('.scope').innerText()), 'banner should name the search: ' + (await page.locator('.scope').innerText()));
@@ -553,19 +553,22 @@ async function browserTests(cookie, appId) {
     await shot('02a-scope');
   });
   await step('picking a past search shows only its listings; All jobs shows everything', async () => {
-    const allCount = async () => Number(await page.locator('.tabs button:has-text("All") .n').innerText());
+    const allCount = async () => {
+      await page.waitForFunction(() => [...document.querySelectorAll('.tabs button')].find((b) => b.textContent.startsWith('All'))?.querySelector('.n')?.textContent !== '0');
+      return Number(await page.locator('.tabs button:has-text("All") .n').innerText());
+    };
     await page.locator('.past-item', { hasText: 'All jobs' }).click();
-    await page.waitForFunction(() => !document.querySelector('.scope'));
+    await page.waitForFunction(() => document.querySelector('.scope h1')?.textContent === 'All jobs');
     const everything = await allCount();
     await page.locator('.past-item', { hasText: /^machine learning engineer/ }).first().click();
-    await page.waitForSelector('.scope b');
+    await page.waitForSelector('.scope h1');
     const one = await allCount();
     ok(one > 0 && one < everything, `search ${one} vs all ${everything}`);
     await page.locator('.scope .btn', { hasText: 'Show all jobs' }).click();
-    await page.waitForFunction(() => !document.querySelector('.scope'));
+    await page.waitForFunction(() => document.querySelector('.scope h1')?.textContent === 'All jobs');
     eq(await allCount(), everything);
     await page.locator('.past-item', { hasText: /^ml engineer/ }).first().click();
-    await page.waitForSelector('.scope b');
+    await page.waitForSelector('.scope h1');
     ok((await page.locator('.past-item', { hasText: 'anything' }).count()) === 1, 'the empty failed search is listed too');
     await page.locator('.past-item', { hasText: 'anything' }).click();
     await page.waitForSelector('text=This search returned no listings');
@@ -574,11 +577,12 @@ async function browserTests(cookie, appId) {
   });
   await step('inside a multi-role search the role and place chips filter the results', async () => {
     await page.locator('.past-item', { hasText: /^ai engineer/ }).first().click();
-    await page.waitForSelector('.scope b');
+    await page.waitForSelector('.scope h1');
     await page.click('.tabs button:has-text("All")');
     const rows = async () => page.locator('.row-job').count();
     const chip = (group, text) => page.locator(`[aria-label="${group}"] .chip`, { hasText: text });
     eq(await rows(), 4);
+    await page.click('.filters-btn');
     eq((await chip('Role searched', 'ai engineer').innerText()).replace(/\s+/g, ' '), 'ai engineer 3');
     eq((await chip('Role searched', 'applied scientist').innerText()).replace(/\s+/g, ' '), 'applied scientist 2');
     eq((await chip('Place searched', 'Mumbai').innerText()).replace(/\s+/g, ' '), 'Mumbai 1');
@@ -590,12 +594,17 @@ async function browserTests(cookie, appId) {
     await chip('Role searched', 'applied scientist').click();
     eq(await rows(), 1);
     await shot('02b-role-place-filter');
-    await page.click('button:has-text("Clear filters")');
+    ok((await page.locator('.active-chips .tag').count()) === 2, 'active filter chips should be listed');
+    await page.click('.fpop-foot button:has-text("Clear filters")');
     eq(await rows(), 4);
     ok((await page.locator('[aria-label="Role searched"]').count()) === 1);
+    await page.keyboard.press('Escape');
+    await page.locator('.filters-btn[aria-expanded=true]').count() && await page.click('.filters-btn');
     await page.locator('.past-item', { hasText: /^machine learning engineer/ }).first().click();
-    await page.waitForSelector('.scope b');
+    await page.waitForSelector('.scope h1');
+    await page.click('.filters-btn');
     eq(await page.locator('[aria-label="Role searched"]').count(), 0, 'single-role searches have nothing to split by');
+    await page.click('.filters-btn');
   });
   await step('the workbench lists jobs, with the first selected and detail shown', async () => {
     await page.waitForSelector('.row-job');
@@ -637,17 +646,24 @@ async function browserTests(cookie, appId) {
     await page.waitForSelector('.fit b.num');
     ok((await page.locator('.meter.hi').count()) >= 1, 'a high score meter should be green');
     await shot('04-scored');
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    await page.click('.filters-btn');
+    await page.waitForTimeout(300);
+    await shot('04b-dark-filters');
+    await page.click('.filters-btn');
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
     await page.selectOption('select[aria-label="Sort"]', 'newest');
   });
   await step('searching from the page shows progress, then new rows', async () => {
+    await page.click('button:has-text("New search")');
     await page.fill('#kw', 'nlp engineer'); await page.press('#kw', 'Enter');
     await page.fill('#loc', 'Hyderabad'); await page.press('#loc', 'Enter');
     await page.click('.chip:has-text("Entry level")');
-    await page.click('button:has-text("Search")');
+    await page.click('button:has-text("Run search")');
     await page.waitForSelector('.runs li');
     await shot('05-searching');
     await page.waitForSelector('.runs .st.done', { timeout: 30000 });
-    await page.waitForFunction(() => document.querySelector('.scope b')?.textContent === 'nlp engineer', null, { timeout: 15000 });
+    await page.waitForFunction(() => document.querySelector('.scope h1')?.textContent === 'nlp engineer', null, { timeout: 15000 });
     const log = await (await fetch('http://localhost:4010/__log')).json();
     const li = log.filter((l) => l.actor === 'curious_coder/linkedin-jobs-scraper').at(-1);
     eq(new URL(li.input.urls[0]).searchParams.get('f_E'), '2', 'entry chip should send f_E=2');
@@ -656,18 +672,20 @@ async function browserTests(cookie, appId) {
   });
   await step('the years filter narrows the list and rows show what each posting asks', async () => {
     await page.locator('.past-item', { hasText: 'All jobs' }).click();
-    await page.waitForFunction(() => !document.querySelector('.scope'));
+    await page.waitForFunction(() => document.querySelector('.scope h1')?.textContent === 'All jobs');
     await page.click('.tabs button:has-text("All")');
     const before = await page.locator('.row-job').count();
+    await page.click('.filters-btn');
     await page.click('.chip:has-text("Entry 0–2")');
     const after = await page.locator('.row-job').count();
     ok(after > 0 && after < before, `years filter ${before} -> ${after}`);
     await page.uncheck('text=Keep postings that don');
-    const rows = await page.locator('.row-job .rj-sub').allInnerTexts();
+    const rows = await page.locator('.row-job .rj-meta').allInnerTexts();
     ok(rows.length > 0 && rows.every((t) => /yrs|No experience/.test(t)), 'every row should state years: ' + JSON.stringify(rows.slice(0, 3)));
     ok(!rows.some((t) => t.includes('5+ yrs')), 'no 5+ postings');
     await shot('05c-years');
-    await page.click('button:has-text("Clear filters")');
+    await page.click('.fpop-foot button:has-text("Clear filters")');
+    await page.click('.fpop-foot button.primary');
   });
   await step('the applications board shows the draft and drag changes status', async () => {
     await page.goto(`${BASE}/applications`);
@@ -720,6 +738,14 @@ async function browserTests(cookie, appId) {
       throw new Error('page should not scroll sideways: ' + JSON.stringify(wide));
     }
     await shot('11-mobile');
+    await page.locator('.row-job').first().click();
+    await page.waitForSelector('.detail.open');
+    await page.waitForTimeout(400);
+    await shot('11b-mobile-detail');
+    await page.click('.back-btn');
+    await page.click('.filters-btn');
+    await page.waitForTimeout(300);
+    await shot('11c-mobile-filters');
   });
   await step('no unexpected script errors in the browser', async () => {
     eq(errors, []);

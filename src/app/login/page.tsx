@@ -22,10 +22,10 @@ export default function Login() {
   return (
     <main className="login">
       <form onSubmit={submit}>
-        <h1 className="brand" style={{ fontSize: '2rem' }}>
+        <h1 className="brand">
           Job<span>hunt</span>
         </h1>
-        <p className="hint">Your job search, with Claude as the writing desk.</p>
+        <p className="lede">Your job search, with Claude as the writing desk.</p>
         <label className="field" htmlFor="pw">
           Password
         </label>

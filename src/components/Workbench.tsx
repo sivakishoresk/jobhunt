@@ -63,6 +63,7 @@ export function Workbench() {
   const [scopeIds, setScopeIds] = useState<Set<string> | null>(null);
   const [newOnly, setNewOnly] = useState(false);
   const [scopeReady, setScopeReady] = useState(false);
+  const [scopeLoading, setScopeLoading] = useState(false);
   // Which role / place run found each job, for searches that covered several of either.
   const [attr, setAttr] = useState<{ roles: string[]; places: string[]; byJob: Map<string, [number, number][]> } | null>(null);
   const [roleSel, setRoleSel] = useState<Set<number>>(new Set());
@@ -74,6 +75,8 @@ export function Workbench() {
   const [detail, setDetail] = useState<JobFull | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [help, setHelp] = useState(false);
   const { show, node: toastNode } = useToast();
   const filterRef = useRef<HTMLInputElement>(null);
@@ -126,8 +129,10 @@ export function Workbench() {
     ls('jh.scope', id);
     if (id === 'all') {
       setScopeIds(null);
+      setScopeLoading(false);
       return;
     }
+    setScopeLoading(true);
     try {
       const r = await api<{ ids: string[]; roles: string[]; places: string[]; rows: [string, number, number][] }>(`/api/searches/${id}/jobs`);
       setScopeIds(new Set(r.ids));
@@ -138,6 +143,8 @@ export function Workbench() {
       }
     } catch {
       setScopeIds(new Set());
+    } finally {
+      setScopeLoading(false);
     }
   }, []);
 
@@ -187,6 +194,7 @@ export function Workbench() {
         json: { keywords: kw, location: loc, remote, days: days || null, experience: [...levels].sort(), sources: [...pickedSources] },
       });
       setSearch(sv);
+      setNewOpen(false);
       loadSearches();
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'Search failed.');
@@ -222,10 +230,11 @@ export function Workbench() {
   // ---------- derived list ----------
   const scopeSearch = useMemo(() => pastSearches.find((x) => x.id === scopeId) ?? null, [pastSearches, scopeId]);
   const scoped = useMemo(() => {
+    if (scopeLoading) return [];
     if (!scopeIds) return jobs;
     const since = newOnly ? scopeSearch?.created_at ?? null : null;
     return jobs.filter((j) => scopeIds.has(j.id) && (!since || (j.first_seen != null && j.first_seen >= since)));
-  }, [jobs, scopeIds, newOnly, scopeSearch]);
+  }, [jobs, scopeIds, newOnly, scopeSearch, scopeLoading]);
   // Chip options for the role / place / level filters, counted over the jobs in this view.
   const facets = useMemo(() => {
     const live = scoped.filter((j) => j.state !== 'dismissed');
@@ -427,6 +436,8 @@ export function Workbench() {
         case 'Escape':
           setDetailOpen(false);
           setHelp(false);
+          setNewOpen(false);
+          setFiltersOpen(false);
           break;
       }
     }
@@ -440,289 +451,103 @@ export function Workbench() {
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
 
+  const activeChips: { key: string; label: string; clear: () => void }[] = [];
+  if (attr) {
+    roleSel.forEach((i) => activeChips.push({ key: `r${i}`, label: `Role: ${attr.roles[i] || 'Any'}`, clear: () => setRoleSel((p) => toggle(p, i)) }));
+    placeSel.forEach((i) => activeChips.push({ key: `p${i}`, label: `Place: ${attr.places[i] || 'Anywhere'}`, clear: () => setPlaceSel((p) => toggle(p, i)) }));
+  }
+  levelSel.forEach((lv) => activeChips.push({ key: `l${lv}`, label: `Level: ${lv || 'Not stated'}`, clear: () => setLevelSel((p) => toggle(p, lv)) }));
+  srcFilter.forEach((s) => activeChips.push({ key: `s${s}`, label: `Source: ${sources.find((x) => x.id === s)?.label ?? s}`, clear: () => setSrcFilter((p) => toggle(p, s)) }));
+  if (minScore) activeChips.push({ key: 'ms', label: `Fit ${minScore}+`, clear: () => setMinScore(0) });
+  if (within) activeChips.push({ key: 'wi', label: within === 1 ? 'Posted in 24 hours' : `Posted in ${within} days`, clear: () => setWithin(0) });
+  if (yrsFrom !== '' || yrsTo !== '')
+    activeChips.push({
+      key: 'yr',
+      label: `Asks ${yrsFrom === '' ? 'up to ' + yrsTo : yrsTo === '' ? yrsFrom + '+' : yrsFrom + '–' + yrsTo} yrs${yrsUnstated ? '' : ', stated only'}`,
+      clear: () => {
+        setYrsFrom('');
+        setYrsTo('');
+        setYrsUnstated(true);
+      },
+    });
+  if (remoteOnly) activeChips.push({ key: 're', label: 'Remote only', clear: () => setRemoteOnly(false) });
+  if (salaryOnly) activeChips.push({ key: 'sa', label: 'Shows a salary', clear: () => setSalaryOnly(false) });
+  if (unscored) activeChips.push({ key: 'un', label: 'Not scored yet', clear: () => setUnscored(false) });
+
+  const verdict = (n: number) => (n >= 80 ? 'Strong fit' : n >= 70 ? 'Good fit' : n >= 50 ? 'Possible fit' : 'Weak fit');
+  const srcLabel = (id: string) => sources.find((s) => s.id === id)?.label ?? id;
+  const scopeMeta = (sx: SearchView) =>
+    [termsText(sx.query.location), sx.query.days ? `last ${sx.query.days === 1 ? '24 hours' : sx.query.days + ' days'}` : '', levelText(sx.query.experience)].filter(Boolean).join(' · ');
+  const running = search?.status === 'running';
+
   return (
     <div className="wb">
-      {/* ---------- rail ---------- */}
-      <aside className="rail" aria-label="Search and filters">
-        <h2>Find new jobs</h2>
-        {!apifyOk && (
-          <p className="notice">
-            Searching needs an Apify token. Add <code>APIFY_TOKEN</code> to the environment and redeploy.
-          </p>
-        )}
-        <form onSubmit={runSearch}>
-          <label className="field" htmlFor="kw" style={{ marginTop: 0 }}>
-            Roles or skills
-          </label>
-          <TagInput id="kw" values={kw} onChange={setKw} placeholder="machine learning engineer" suggestions={titleIdeas} />
-          <label className="field" htmlFor="loc">
-            Places
-          </label>
-          <TagInput id="loc" values={loc} onChange={setLoc} placeholder="Bangalore, India" />
-          {kw.length * Math.max(1, loc.length) > 1 && (
-            <p className="hint">
-              {kw.length * Math.max(1, loc.length)} searches per source (every role in every place).
-            </p>
+      {/* ---------- searches ---------- */}
+      <aside className="rail" aria-label="Searches">
+        <div className="rail-head">
+          <h2>
+            Searches <small>{pastSearches.length} saved</small>
+          </h2>
+          <button className="btn primary block" onClick={() => setNewOpen(true)}>
+            <svg className="ic" viewBox="0 0 24 24" aria-hidden>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            {running ? 'Searching…' : 'New search'}
+          </button>
+        </div>
+        <div className="rail-scroll">
+          {search && (
+            <ul className="runs" aria-live="polite" aria-label="Current search">
+              {search.runs.map((r) => (
+                <li key={r.id}>
+                  <span className="st">{srcLabel(r.source)}</span>
+                  {(r.keywords || r.location) && <span className="hint"> · {[r.keywords, r.location].filter(Boolean).join(' in ')}</span>}{' '}
+                  {r.status === 'running' || r.status === 'ingesting' ? (
+                    <span>
+                      <span className="pulse" aria-hidden /> running {elapsed(r.started_at)}
+                    </span>
+                  ) : r.status === 'done' ? (
+                    <span className="st done">
+                      {r.found} found, {r.added} new
+                    </span>
+                  ) : (
+                    <span className="st failed">failed</span>
+                  )}
+                  {r.error && <div className="err" style={{ fontWeight: 400 }}>{r.error}</div>}
+                </li>
+              ))}
+            </ul>
           )}
-          <label className="field" htmlFor="days">
-            Posted
-          </label>
-          <select id="days" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            <option value={1}>Last 24 hours</option>
-            <option value={3}>Last 3 days</option>
-            <option value={7}>Last 7 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={0}>Any time</option>
-          </select>
-          <label className="field">Experience level</label>
-          <div className="row" role="group" aria-label="LinkedIn experience level">
-            {LINKEDIN_LEVELS.map((l) => (
-              <button
-                type="button"
-                key={l.code}
-                className="chip"
-                aria-pressed={levels.has(l.code)}
-                onClick={() =>
-                  setLevels((p) => {
-                    const n = new Set(p);
-                    n.has(l.code) ? n.delete(l.code) : n.add(l.code);
-                    return n;
-                  })
-                }
-              >
-                {l.label}
-              </button>
-            ))}
-          </div>
-          <p className="hint" style={{ margin: '0.3rem 0 0' }}>
-            LinkedIn only. It narrows the search before you are billed. None selected means any level.
-          </p>
-          <label className="check">
-            <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} /> Remote only
-          </label>
-          {sources.length > 0 && (
-            <div className="row" role="group" aria-label="Sources to search">
-              {sources
-                .filter((s) => s.enabled)
-                .map((s) => (
-                  <button
-                    type="button"
-                    key={s.id}
-                    className="chip"
-                    aria-pressed={pickedSources.has(s.id)}
-                    onClick={() =>
-                      setPickedSources((p) => {
-                        const n = new Set(p);
-                        n.has(s.id) ? n.delete(s.id) : n.add(s.id);
-                        return n;
-                      })
-                    }
-                  >
-                    {s.label}
-                  </button>
-                ))}
-            </div>
-          )}
-          {searchError && (
-            <p className="err" role="alert">
-              {searchError}
-            </p>
-          )}
-          <p>
-            <button className="btn primary" disabled={starting || search?.status === 'running' || !pickedSources.size}>
-              {starting ? 'Starting…' : search?.status === 'running' ? 'Searching…' : 'Search'}
-            </button>
-          </p>
-        </form>
-        {search && (
-          <ul className="runs" aria-live="polite">
-            {search.runs.map((r) => (
-              <li key={r.id}>
-                <span className="st">{sources.find((s) => s.id === r.source)?.label ?? r.source}</span>
-                {(r.keywords || r.location) && <span className="hint"> · {[r.keywords, r.location].filter(Boolean).join(' in ')}</span>}{' '}
-                {r.status === 'running' || r.status === 'ingesting' ? (
-                  <span>running… {elapsed(r.started_at)}</span>
-                ) : r.status === 'done' ? (
-                  <span className="st done">
-                    {r.found} found, {r.added} new
-                  </span>
-                ) : (
-                  <span className="st failed">failed</span>
-                )}
-                {r.error && <div className="err" style={{ fontWeight: 400 }}>{r.error}</div>}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <h2>Past searches</h2>
-        <ul className="past" aria-label="Past searches">
-          <li>
-            <button className="past-item" aria-current={scopeId === 'all'} onClick={() => selectScope('all')}>
-              <span className="pi-main">All jobs</span>
-              <span className="pi-side">{jobs.length}</span>
-            </button>
-          </li>
-          {pastSearches.map((sx) => (
-            <li key={sx.id}>
-              <button className="past-item" aria-current={scopeId === sx.id} onClick={() => selectScope(sx.id)} title={searchTitle(sx)}>
-                <span className="pi-main">{termsText(sx.query.keywords)}</span>
-                <span className="pi-sub">
-                  {[termsText(sx.query.location), sx.query.days ? `last ${sx.query.days === 1 ? '24h' : sx.query.days + 'd'}` : '', levelText(sx.query.experience)].filter(Boolean).join(' · ')}
-                  {' · '}
-                  {timeAgo(sx.created_at)} ago
-                </span>
-                <span className="pi-side">
-                  {sx.status === 'running' ? 'running…' : sx.status === 'failed' ? 'failed' : `${sx.jobs}${sx.added ? ` · ${sx.added} new` : ''}`}
-                </span>
+          <ul className="past" aria-label="Past searches">
+            <li>
+              <button className="past-item" aria-current={scopeId === 'all'} onClick={() => selectScope('all')}>
+                <span className="pi-main">All jobs</span>
+                <span className="pi-side">{jobs.length}</span>
+                <span className="pi-sub">Everything you have collected</span>
               </button>
             </li>
-          ))}
-          {!pastSearches.length && <li className="hint">Searches you run appear here, each with its own listings.</li>}
-        </ul>
-
-        <h2>Filters</h2>
-        {attr && attr.roles.length > 1 && (
-          <>
-            <label className="field" style={{ marginTop: 0 }}>Role searched</label>
-            <div className="row" role="group" aria-label="Role searched">
-              {attr.roles.map((r, i) => (
-                <button key={r + i} className="chip" aria-pressed={roleSel.has(i)} onClick={() => setRoleSel((p) => toggle(p, i))}>
-                  {r || 'Any role'}
-                  <span className="n">{facets.roleN.get(i) ?? 0}</span>
+            {pastSearches.map((sx) => (
+              <li key={sx.id}>
+                <button className="past-item" aria-current={scopeId === sx.id} onClick={() => selectScope(sx.id)} title={searchTitle(sx)}>
+                  <span className="pi-main">{termsText(sx.query.keywords)}</span>
+                  <span className="pi-side">{sx.status === 'running' ? <span className="pulse" aria-label="running" /> : sx.status === 'failed' ? 'failed' : sx.jobs}</span>
+                  <span className="pi-sub">{scopeMeta(sx).replace(/last (\d+) days/, 'last $1d').replace('last 24 hours', 'last 24h') || 'Any place'}</span>
+                  <span className="pi-foot">
+                    <span>{timeAgo(sx.created_at)} ago</span>
+                    {sx.added > 0 && <span className="pill-new">{sx.added} new</span>}
+                    {sx.status === 'partial' && <span className="pill-bad">partial</span>}
+                  </span>
                 </button>
-              ))}
-            </div>
-          </>
-        )}
-        {attr && attr.places.length > 1 && (
-          <>
-            <label className="field">Place searched</label>
-            <div className="row" role="group" aria-label="Place searched">
-              {attr.places.map((r, i) => (
-                <button key={r + i} className="chip" aria-pressed={placeSel.has(i)} onClick={() => setPlaceSel((p) => toggle(p, i))}>
-                  {r || 'Anywhere'}
-                  <span className="n">{facets.placeN.get(i) ?? 0}</span>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-        <label className="field" htmlFor="minscore" style={{ marginTop: 0 }}>
-          Fit score
-        </label>
-        <select id="minscore" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}>
-          <option value={0}>Any</option>
-          <option value={50}>50 or more</option>
-          <option value={70}>70 or more</option>
-          <option value={80}>80 or more</option>
-        </select>
-        <label className="field" htmlFor="within">
-          Posted
-        </label>
-        <select id="within" value={within} onChange={(e) => setWithin(Number(e.target.value))}>
-          <option value={0}>Any time</option>
-          <option value={1}>Last 24 hours</option>
-          <option value={3}>Last 3 days</option>
-          <option value={7}>Last 7 days</option>
-          <option value={30}>Last 30 days</option>
-        </select>
-        <label className="field">Years of experience asked</label>
-        <div className="yrs">
-          <input type="number" min={0} max={40} inputMode="numeric" aria-label="From years" placeholder="from" value={yrsFrom} onChange={(e) => setYrsFrom(e.target.value)} />
-          <span aria-hidden>to</span>
-          <input type="number" min={0} max={40} inputMode="numeric" aria-label="To years" placeholder="to" value={yrsTo} onChange={(e) => setYrsTo(e.target.value)} />
+              </li>
+            ))}
+            {!pastSearches.length && <li className="hint">Searches you run appear here, each with its own listings.</li>}
+          </ul>
         </div>
-        <div className="row" style={{ marginTop: '0.4rem' }}>
-          {[
-            ['Entry 0–2', '0', '2'],
-            ['Mid 3–5', '3', '5'],
-            ['Senior 6+', '6', ''],
-          ].map(([label, a, b]) => (
-            <button
-              key={label}
-              type="button"
-              className="chip"
-              aria-pressed={yrsFrom === a && yrsTo === b}
-              onClick={() => {
-                const on = yrsFrom === a && yrsTo === b;
-                setYrsFrom(on ? '' : a);
-                setYrsTo(on ? '' : b);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {(yrsFrom !== '' || yrsTo !== '') && (
-          <label className="check" style={{ marginTop: '0.4rem' }}>
-            <input type="checkbox" checked={yrsUnstated} onChange={(e) => setYrsUnstated(e.target.checked)} /> Keep postings that don&apos;t say
-          </label>
-        )}
-        {facets.levelN.size > 1 && (
-          <>
-            <label className="field">Seniority</label>
-            <div className="row" role="group" aria-label="Seniority">
-              {[...facets.levelN.entries()]
-                .sort((a, b) => b[1] - a[1])
-                .map(([lv, n]) => (
-                  <button
-                    key={lv || 'none'}
-                    className="chip"
-                    aria-pressed={levelSel.has(lv)}
-                    onClick={() => setLevelSel((p) => toggle(p, lv))}
-                  >
-                    {lv || 'Not stated'}
-                    <span className="n">{n}</span>
-                  </button>
-                ))}
-            </div>
-          </>
-        )}
-        {sourceIds.length > 1 && (
-          <>
-            <label className="field">Source</label>
-            <div className="row">
-              {sourceIds.map((s) => (
-                <button
-                  key={s}
-                  className="chip"
-                  aria-pressed={srcFilter.has(s)}
-                  onClick={() =>
-                    setSrcFilter((p) => {
-                      const n = new Set(p);
-                      n.has(s) ? n.delete(s) : n.add(s);
-                      return n;
-                    })
-                  }
-                >
-                  {sources.find((x) => x.id === s)?.label ?? s}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-        <label className="check" style={{ marginTop: '0.7rem' }}>
-          <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} /> Remote only
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={salaryOnly} onChange={(e) => setSalaryOnly(e.target.checked)} /> Shows a salary
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={unscored} onChange={(e) => setUnscored(e.target.checked)} /> Not scored yet
-        </label>
-        {filtersActive && (
-          <p>
-            <button className="btn small" onClick={resetFilters}>
-              Clear filters
-            </button>
-          </p>
-        )}
-        <p className="hint" style={{ marginTop: '1.2rem' }}>
+        <div className="rail-foot">
           <button className="btn quiet small" onClick={() => setHelp(true)}>
             Keyboard shortcuts <kbd>?</kbd>
           </button>
-        </p>
+        </div>
       </aside>
 
       {/* ---------- list ---------- */}
@@ -731,15 +556,16 @@ export function Workbench() {
           {scopeSearch ? (
             <div className="scope" role="status">
               <div>
-                <b>{termsText(scopeSearch.query.keywords)}</b>
-                <span className="hint">
-                  {' '}
-                  {[termsText(scopeSearch.query.location), scopeSearch.query.days ? `last ${scopeSearch.query.days === 1 ? '24 hours' : scopeSearch.query.days + ' days'}` : '', levelText(scopeSearch.query.experience)].filter(Boolean).join(' · ')}
-                  {' · '}
-                  {new Date(scopeSearch.created_at ?? Date.now()).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
-                  {' · '}
-                  {scopeSearch.jobs} listings{scopeSearch.added ? `, ${scopeSearch.added} new` : ''}
-                </span>
+                <h1>{termsText(scopeSearch.query.keywords)}</h1>
+                <p className="meta">
+                  {[
+                    scopeMeta(scopeSearch),
+                    new Date(scopeSearch.created_at ?? Date.now()).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }),
+                    `${scopeSearch.jobs} listings${scopeSearch.added ? `, ${scopeSearch.added} new` : ''}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
               </div>
               <div className="scope-actions">
                 {scopeSearch.added > 0 && (
@@ -752,27 +578,64 @@ export function Workbench() {
                 </button>
               </div>
             </div>
+          ) : scopeId === 'all' && scopeReady ? (
+            <div className="scope" role="status">
+              <div>
+                <h1>All jobs</h1>
+                <p className="meta">
+                  {jobs.length} listings from {pastSearches.length} search{pastSearches.length === 1 ? '' : 'es'}
+                </p>
+              </div>
+            </div>
           ) : (
-            scopeId !== 'all' && <div className="scope hint">Loading search…</div>
+            <div className="scope hint">Loading search…</div>
           )}
-          <div className="filterbar">
-            <input
-              ref={filterRef}
-              type="search"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Filter by title, company, place or skill   ( / )"
-              aria-label="Filter jobs"
-            />
+          <div className="toolbar">
+            <div className="search-box">
+              <svg className="ic" viewBox="0 0 24 24" aria-hidden>
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input
+                ref={filterRef}
+                type="search"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Filter by title, company, place or skill"
+                aria-label="Filter jobs"
+              />
+            </div>
+            <button className="btn filters-btn" aria-expanded={filtersOpen} aria-haspopup="dialog" onClick={() => setFiltersOpen((o) => !o)}>
+              <svg className="ic" viewBox="0 0 24 24" aria-hidden>
+                <path d="M4 6h16M7 12h10M10 18h4" />
+              </svg>
+              Filters
+              {activeChips.length > 0 && <span className="count">{activeChips.length}</span>}
+            </button>
             <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
               <option value="newest">Newest</option>
               <option value="score">Best fit</option>
               <option value="company">Company</option>
             </select>
-            <button className="btn small" onClick={() => setAdding(true)}>
+            <button className="btn" onClick={() => setAdding(true)}>
               Add a posting
             </button>
           </div>
+          {activeChips.length > 0 && (
+            <ul className="tag-list active-chips" aria-label="Active filters">
+              {activeChips.map((c) => (
+                <li key={c.key} className="tag">
+                  {c.label}
+                  <button aria-label={`Remove filter ${c.label}`} onClick={c.clear}>×</button>
+                </li>
+              ))}
+              <li>
+                <button className="btn quiet small" onClick={resetFilters}>
+                  Clear all
+                </button>
+              </li>
+            </ul>
+          )}
           <div className="tabs" role="tablist">
             {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
@@ -781,16 +644,154 @@ export function Workbench() {
               </button>
             ))}
           </div>
+
+          {filtersOpen && (
+            <>
+              <div className="pop-back" onClick={() => setFiltersOpen(false)} />
+              <div className="filters-pop" role="dialog" aria-label="Filters">
+                <div className="fgrid">
+                  {attr && attr.roles.length > 1 && (
+                    <div className="fgroup">
+                      <h3>Role searched</h3>
+                      <div className="row" role="group" aria-label="Role searched">
+                        {attr.roles.map((r, i) => (
+                          <button key={r + i} className="chip" aria-pressed={roleSel.has(i)} onClick={() => setRoleSel((p) => toggle(p, i))}>
+                            {r || 'Any role'}
+                            <span className="n">{facets.roleN.get(i) ?? 0}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {attr && attr.places.length > 1 && (
+                    <div className="fgroup">
+                      <h3>Place searched</h3>
+                      <div className="row" role="group" aria-label="Place searched">
+                        {attr.places.map((r, i) => (
+                          <button key={r + i} className="chip" aria-pressed={placeSel.has(i)} onClick={() => setPlaceSel((p) => toggle(p, i))}>
+                            {r || 'Anywhere'}
+                            <span className="n">{facets.placeN.get(i) ?? 0}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {facets.levelN.size > 1 && (
+                    <div className="fgroup">
+                      <h3>Seniority</h3>
+                      <div className="row" role="group" aria-label="Seniority">
+                        {[...facets.levelN.entries()]
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([lv, n]) => (
+                            <button key={lv || 'none'} className="chip" aria-pressed={levelSel.has(lv)} onClick={() => setLevelSel((p) => toggle(p, lv))}>
+                              {lv || 'Not stated'}
+                              <span className="n">{n}</span>
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="fgroup">
+                    <h3>Years of experience asked</h3>
+                    <div className="yrs">
+                      <input type="number" min={0} max={40} inputMode="numeric" aria-label="From years" placeholder="from" value={yrsFrom} onChange={(e) => setYrsFrom(e.target.value)} />
+                      <span aria-hidden>to</span>
+                      <input type="number" min={0} max={40} inputMode="numeric" aria-label="To years" placeholder="to" value={yrsTo} onChange={(e) => setYrsTo(e.target.value)} />
+                    </div>
+                    <div className="row" style={{ marginTop: '0.5rem' }}>
+                      {[
+                        ['Entry 0–2', '0', '2'],
+                        ['Mid 3–5', '3', '5'],
+                        ['Senior 6+', '6', ''],
+                      ].map(([label, a, b]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          className="chip"
+                          aria-pressed={yrsFrom === a && yrsTo === b}
+                          onClick={() => {
+                            const on = yrsFrom === a && yrsTo === b;
+                            setYrsFrom(on ? '' : a);
+                            setYrsTo(on ? '' : b);
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {(yrsFrom !== '' || yrsTo !== '') && (
+                      <label className="check" style={{ marginTop: '0.5rem' }}>
+                        <input type="checkbox" checked={yrsUnstated} onChange={(e) => setYrsUnstated(e.target.checked)} /> Keep postings that don&apos;t say
+                      </label>
+                    )}
+                  </div>
+                  <div className="fgroup">
+                    <label className="field" htmlFor="minscore">
+                      Fit score
+                    </label>
+                    <select id="minscore" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}>
+                      <option value={0}>Any</option>
+                      <option value={50}>50 or more</option>
+                      <option value={70}>70 or more</option>
+                      <option value={80}>80 or more</option>
+                    </select>
+                    <label className="field" htmlFor="within">
+                      Posted
+                    </label>
+                    <select id="within" value={within} onChange={(e) => setWithin(Number(e.target.value))}>
+                      <option value={0}>Any time</option>
+                      <option value={1}>Last 24 hours</option>
+                      <option value={3}>Last 3 days</option>
+                      <option value={7}>Last 7 days</option>
+                      <option value={30}>Last 30 days</option>
+                    </select>
+                  </div>
+                  <div className="fgroup">
+                    {sourceIds.length > 1 && (
+                      <>
+                        <h3>Source</h3>
+                        <div className="row">
+                          {sourceIds.map((s) => (
+                            <button key={s} className="chip" aria-pressed={srcFilter.has(s)} onClick={() => setSrcFilter((p) => toggle(p, s))}>
+                              {srcLabel(s)}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <h3 style={{ marginTop: '0.9rem' }}>Show only</h3>
+                    <label className="check">
+                      <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} /> Remote
+                    </label>
+                    <label className="check">
+                      <input type="checkbox" checked={salaryOnly} onChange={(e) => setSalaryOnly(e.target.checked)} /> Shows a salary
+                    </label>
+                    <label className="check">
+                      <input type="checkbox" checked={unscored} onChange={(e) => setUnscored(e.target.checked)} /> Not scored yet
+                    </label>
+                  </div>
+                </div>
+                <div className="fpop-foot">
+                  <button className="btn quiet small" onClick={resetFilters} disabled={!filtersActive}>
+                    Clear filters
+                  </button>
+                  <button className="btn primary small" onClick={() => setFiltersOpen(false)}>
+                    Show {visible.length} job{visible.length === 1 ? '' : 's'}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
         <div className="list" role="listbox" aria-label="Job results">
-          {!loaded || !scopeReady ? (
+          {!loaded || !scopeReady || scopeLoading ? (
             <div className="empty">Loading…</div>
           ) : visible.length === 0 ? (
             <div className="empty">
               {jobs.length === 0 ? (
                 <>
                   <h3>No jobs yet</h3>
-                  <p>Run a search on the left, or ask Claude: “Find machine learning engineer jobs in Bangalore from the last week.”</p>
+                  <p>Start with New search, or ask Claude: “Find machine learning engineer jobs in Bangalore from the last week.”</p>
                 </>
               ) : scopeSearch && scopeSearch.jobs === 0 ? (
                 <>
@@ -821,69 +822,73 @@ export function Workbench() {
               )}
             </div>
           ) : (
-            visible.map((j) => (
-              <button
-                id={`job-${j.id}`}
-                key={j.id}
-                role="option"
-                aria-selected={j.id === selectedId}
-                className={`row-job${j.state === 'dismissed' ? ' dim' : ''}`}
-                onClick={() => {
-                  setSelectedId(j.id);
-                  setDetailOpen(true);
-                }}
-              >
-                <Meter score={j.score} />
-                <span style={{ minWidth: 0 }}>
-                  <span className="rj-title">
-                    <Highlight text={j.title} terms={terms} />
+            visible.map((j) => {
+              const yl = yearsLabel(j.min_years, j.max_years);
+              return (
+                <button
+                  id={`job-${j.id}`}
+                  key={j.id}
+                  role="option"
+                  aria-selected={j.id === selectedId}
+                  className={`row-job${j.state === 'dismissed' ? ' dim' : ''}`}
+                  onClick={() => {
+                    setSelectedId(j.id);
+                    setDetailOpen(true);
+                  }}
+                >
+                  <Meter score={j.score} />
+                  <span className="rj-body">
+                    <span className="rj-title">
+                      <Highlight text={j.title} terms={terms} />
+                    </span>
+                    <span className="rj-sub">
+                      <Highlight text={j.company} terms={terms} />
+                      {j.location ? ' · ' : ''}
+                      <Highlight text={j.location} terms={terms} />
+                    </span>
+                    <span className="rj-meta">
+                      {yl && <span className="pill yrs-pill">{yl}</span>}
+                      {j.remote && <span className="pill">Remote</span>}
+                      {j.salary && <span className="pill">{j.salary}</span>}
+                      {j.seniority && <span className="pill">{j.seniority}</span>}
+                      {j.state === 'saved' && <span className="pill">Saved</span>}
+                      {j.state === 'applied' && <span className="pill">Applied</span>}
+                    </span>
                   </span>
-                  <span className="rj-sub">
-                    <Highlight text={j.company} terms={terms} />
-                    {j.location ? ' · ' : ''}
-                    <Highlight text={j.location} terms={terms} />
-                    {j.remote && !/remote/i.test(j.location) ? ' · Remote' : ''}
-                    {j.salary ? ` · ${j.salary}` : ''}
-                    {yearsLabel(j.min_years, j.max_years) ? ` · ${yearsLabel(j.min_years, j.max_years)}` : ''}
+                  <span className="rj-side">
+                    <span>{timeAgo(j.posted_at ?? j.first_seen)}</span>
+                    {j.score != null ? <b>{j.score}</b> : <span className="src-mark">{srcLabel(j.source)}</span>}
                   </span>
-                </span>
-                <span className="rj-side">
-                  <span>{timeAgo(j.posted_at ?? j.first_seen)}</span>
-                  {j.score != null ? <b>{j.score}</b> : <span className="tag">{sources.find((s) => s.id === j.source)?.label ?? j.source}</span>}
-                </span>
-              </button>
-            ))
+                </button>
+              );
+            })
           )}
         </div>
       </section>
 
-      {/* ---------- detail ---------- */}
+      {/* ---------- reading pane ---------- */}
       <article className={`detail${detailOpen ? ' open' : ''}`} aria-label="Job details">
-        <button className="btn small quiet" style={{ display: 'none' }} id="close-detail" onClick={() => setDetailOpen(false)}>
-          Back
+        <button className="btn small quiet back-btn" onClick={() => setDetailOpen(false)}>
+          ← Back to list
         </button>
-        <style>{`@media (max-width:1100px){#close-detail{display:inline-flex !important;margin-bottom:.6rem}}`}</style>
         {!selected ? (
-          <div className="empty">Select a job to read it here.</div>
+          <div className="empty">
+            <h3>Pick a job</h3>
+            <p>Use <kbd>j</kbd> and <kbd>k</kbd> to move through the list. The posting opens here.</p>
+          </div>
         ) : (
           <>
+            {(selected.state === 'saved' || selected.state === 'applied' || selected.state === 'dismissed') && (
+              <span className={`state-badge${selected.state === 'saved' ? ' saved' : ''}`}>
+                {selected.state === 'saved' ? 'Saved' : selected.state === 'applied' ? 'Applied' : 'Dismissed'}
+              </span>
+            )}
             <h2>
               <Highlight text={selected.title} terms={terms} />
             </h2>
             <p className="co">
               {selected.company} {selected.location && `· ${selected.location}`}
             </p>
-            <div className="facts">
-              {selected.posted_at && <span>Posted {timeAgo(selected.posted_at)} ago</span>}
-              {selected.salary && <span>{selected.salary}</span>}
-              {yearsLabel(selected.min_years, selected.max_years) && (
-                <span title="Read from the posting text. Where several are listed, the highest is shown.">Asks {yearsLabel(selected.min_years, selected.max_years)}</span>
-              )}
-              {selected.employment_type && <span>{selected.employment_type}</span>}
-              {selected.seniority && <span>{selected.seniority}</span>}
-              {selected.remote && <span>Remote</span>}
-              <span className="tag">{sources.find((s) => s.id === selected.source)?.label ?? selected.source}</span>
-            </div>
             <div className="actions">
               <button className={`btn${selected.state === 'saved' ? ' primary' : ''}`} onClick={() => setState(selected.id, selected.state === 'saved' ? 'new' : 'saved')}>
                 {selected.state === 'saved' ? 'Saved' : 'Save'} <kbd>s</kbd>
@@ -900,7 +905,7 @@ export function Workbench() {
                 </a>
               )}
             </div>
-            <p>
+            <div className="cta">
               <a
                 className="btn primary"
                 target="_blank"
@@ -911,12 +916,19 @@ export function Workbench() {
               >
                 Draft with Claude
               </a>
-            </p>
+            </div>
 
             <div className="fit">
               {detail?.score != null ? (
                 <>
-                  <b className="num">{detail.score}</b> <span className="hint">fit, scored by Claude</span>
+                  <div className="fit-top">
+                    <b className="num">{detail.score}</b>
+                    <span className="of">/ 100</span>
+                    <span className="verdict">{verdict(detail.score)}</span>
+                  </div>
+                  <div className="ruler" aria-hidden>
+                    <i style={{ width: `${Math.max(3, detail.score)}%` }} />
+                  </div>
                   {detail.score_reasons.length > 0 && (
                     <ul>
                       {detail.score_reasons.map((r, i) => (
@@ -931,21 +943,67 @@ export function Workbench() {
                   )}
                 </>
               ) : (
-                <p className="hint" style={{ margin: 0 }}>
-                  Not scored yet.{' '}
-                  <a
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    href={claudeLink(`Using my Jobhunt connector, read my profile and score job ${selected.id} (${selected.title} at ${selected.company}) for fit, with reasons and red flags, and save the score.`)}
-                  >
-                    Ask Claude to score it
-                  </a>
-                </p>
+                <>
+                  <div className="ruler empty-ruler" aria-hidden />
+                  <p className="hint" style={{ margin: '0.8rem 0 0' }}>
+                    Not scored yet.{' '}
+                    <a
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      href={claudeLink(`Using my Jobhunt connector, read my profile and score job ${selected.id} (${selected.title} at ${selected.company}) for fit, with reasons and red flags, and save the score.`)}
+                    >
+                      Ask Claude to score it
+                    </a>
+                  </p>
+                </>
               )}
             </div>
 
+            <dl className="facts">
+              {selected.posted_at && (
+                <div>
+                  <dt>Posted</dt>
+                  <dd>{timeAgo(selected.posted_at)} ago</dd>
+                </div>
+              )}
+              {yearsLabel(selected.min_years, selected.max_years) && (
+                <div title="Read from the posting text. Where several are listed, the highest is shown.">
+                  <dt>Experience asked</dt>
+                  <dd>{yearsLabel(selected.min_years, selected.max_years)}</dd>
+                </div>
+              )}
+              {selected.salary && (
+                <div>
+                  <dt>Salary</dt>
+                  <dd>{selected.salary}</dd>
+                </div>
+              )}
+              {selected.seniority && (
+                <div>
+                  <dt>Level</dt>
+                  <dd>{selected.seniority}</dd>
+                </div>
+              )}
+              {selected.employment_type && (
+                <div>
+                  <dt>Type</dt>
+                  <dd>{selected.employment_type}</dd>
+                </div>
+              )}
+              {selected.remote && (
+                <div>
+                  <dt>Work</dt>
+                  <dd>Remote</dd>
+                </div>
+              )}
+              <div>
+                <dt>Source</dt>
+                <dd>{srcLabel(selected.source)}</dd>
+              </div>
+            </dl>
+
             {detail && detail.applications.length > 0 && (
-              <p>
+              <p style={{ marginTop: '1.2rem' }}>
                 {detail.applications.map((a) => (
                   <Link key={a.id} href={`/applications/${a.id}`} className="btn small" style={{ marginRight: 6 }}>
                     Application · {a.status}
@@ -959,6 +1017,7 @@ export function Workbench() {
                 This source returned only a short description. For a better draft, open the posting, copy the full text, and use <b>Add a posting</b>.
               </p>
             )}
+            <h3 className="desc-head">Posting</h3>
             <div className="desc">
               <Highlight text={detail?.description ?? selected.snippet} terms={terms} />
             </div>
@@ -982,6 +1041,87 @@ export function Workbench() {
         )}
       </article>
 
+      {newOpen && (
+        <div className="dialog-back side" onClick={() => setNewOpen(false)}>
+          <aside className="drawer" role="dialog" aria-label="New search" onClick={(e) => e.stopPropagation()}>
+            <div className="drawer-head">
+              <h2>New search</h2>
+              <button className="btn quiet small" aria-label="Close" onClick={() => setNewOpen(false)}>
+                <svg className="ic" viewBox="0 0 24 24" aria-hidden>
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+            {!apifyOk && (
+              <p className="notice">
+                Searching needs an Apify token. Add <code>APIFY_TOKEN</code> to the environment and redeploy.
+              </p>
+            )}
+            <form onSubmit={runSearch}>
+              <label className="field" htmlFor="kw">
+                Roles or skills
+              </label>
+              <TagInput id="kw" values={kw} onChange={setKw} placeholder="machine learning engineer" suggestions={titleIdeas} />
+              <label className="field" htmlFor="loc">
+                Places
+              </label>
+              <TagInput id="loc" values={loc} onChange={setLoc} placeholder="Bangalore, India" />
+              {kw.length * Math.max(1, loc.length) > 1 && (
+                <p className="hint">{kw.length * Math.max(1, loc.length)} searches per source (every role in every place).</p>
+              )}
+              <label className="field" htmlFor="days">
+                Posted
+              </label>
+              <select id="days" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+                <option value={1}>Last 24 hours</option>
+                <option value={3}>Last 3 days</option>
+                <option value={7}>Last 7 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={0}>Any time</option>
+              </select>
+              <label className="field">Experience level</label>
+              <div className="row" role="group" aria-label="LinkedIn experience level">
+                {LINKEDIN_LEVELS.map((l) => (
+                  <button key={l.code} type="button" className="chip" aria-pressed={levels.has(l.code)} onClick={() => setLevels((p) => toggle(p, l.code))}>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint" style={{ margin: '0.4rem 0 0' }}>
+                LinkedIn only. It narrows the search before you are billed. None selected means any level.
+              </p>
+              <label className="check" style={{ marginTop: '1rem' }}>
+                <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} /> Remote only
+              </label>
+              {sources.length > 0 && (
+                <>
+                  <label className="field">Sources</label>
+                  <div className="row" role="group" aria-label="Sources to search">
+                    {sources
+                      .filter((s) => s.enabled)
+                      .map((s) => (
+                        <button key={s.id} type="button" className="chip" aria-pressed={pickedSources.has(s.id)} onClick={() => setPickedSources((p) => toggle(p, s.id))}>
+                          {s.label}
+                        </button>
+                      ))}
+                  </div>
+                </>
+              )}
+              {searchError && (
+                <p className="err" role="alert">
+                  {searchError}
+                </p>
+              )}
+              <p style={{ marginTop: '1.4rem' }}>
+                <button className="btn primary block" disabled={starting || running || !pickedSources.size}>
+                  {starting ? 'Starting…' : running ? 'Searching…' : 'Run search'}
+                </button>
+              </p>
+              <p className="hint">Each search is billed by Apify per listing returned. A short posted window keeps it cheap.</p>
+            </form>
+          </aside>
+        </div>
+      )}
       {adding && (
         <AddPosting
           onClose={() => setAdding(false)}
