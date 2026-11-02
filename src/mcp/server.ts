@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { getProfile, saveProfile, claudeView, profileIsEmpty, ProfilePatchSchema } from '@/lib/profile';
-import { startSearch, advanceSearch, jobsForSearch, listSearches, type SearchView } from '@/lib/searches';
+import { startSearch, advanceSearch, jobsForSearch, listSearches, findSearches, unscoredCounts, type SearchView } from '@/lib/searches';
 import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
 import { termsText } from '@/lib/terms';
 import { asList } from '@/lib/sources';
@@ -18,7 +18,7 @@ import { sleep, errMessage } from '@/lib/util';
 
 const INSTRUCTIONS = `Jobhunt is the user's personal job-search workbench. Jobs come from Apify scrapers (LinkedIn, Y Combinator) and are stored in the user's own database.
 
-Typical flow: get_profile (check it is filled in) -> search_jobs -> score_jobs for the ones worth ranking -> save_application for the one(s) the user picks. Use list_jobs (and list_searches) to see jobs already found before searching again, because every search starts paid Apify runs and a repeated result is still billed. Prefer a short posted_within_days window.
+Typical flow: get_profile (check it is filled in) -> search_jobs -> jobs_to_score (optionally for one past search or role) -> score_jobs -> save_application for the one(s) the user picks. Use list_jobs (and list_searches) to see jobs already found before searching again, because every search starts paid Apify runs and a repeated result is still billed. Prefer a short posted_within_days window.
 
 Rules: never invent experience, employers, numbers, degrees or skills. Resumes and cover letters may only use facts from get_profile, and anything the posting asks for that the profile lacks goes in "gaps". Nothing is ever sent or deleted for the user; drafts wait in the app for review.
 
@@ -46,6 +46,11 @@ function brief(j: JobSummary) {
     years_asked: yearsLabel(j.min_years, j.max_years) ?? undefined,
     description: j.desc_len > 400 ? 'full' : j.desc_len > 0 ? 'short' : 'none',
   };
+}
+
+async function noSearchFound(text: string): Promise<string> {
+  const recent = (await listSearches(8)).map((s) => `${s.id}: ${termsText(s.query.keywords)}${termsText(s.query.location) ? ' in ' + termsText(s.query.location) : ''} (${s.jobs} jobs)`);
+  return `No search matches "${text}". Recent searches: ${recent.join('; ') || 'none yet'}. Use list_searches, then pass a search_id.`;
 }
 
 async function searchReport(sv: SearchView, includeJobs = true) {
@@ -164,13 +169,17 @@ export function createMcpServer(base: string): McpServer {
     {
       title: 'List past searches',
       description:
-        'Lists previous searches, newest first, with what was searched, when, and how many jobs each returned. Use a search_id with list_jobs to see just that search\'s listings.',
-      inputSchema: { limit: z.number().int().min(1).max(50).optional() },
+        'Lists previous searches, newest first, with what was searched, when, how many jobs each returned and how many of those still have no fit score. Pass query (e.g. "AI Research Engineer") to find the searches that used that role. Use a search_id with list_jobs or jobs_to_score to work on just that search\'s listings.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).optional(),
+        query: z.string().optional().describe('Only searches whose roles contain these words, e.g. "AI Research Engineer"'),
+      },
       annotations: readOnly,
     },
-    async ({ limit }) => {
+    async ({ limit, query }) => {
       try {
-        const rows = await listSearches(limit ?? 15);
+        const rows = query ? (await findSearches(query)).map((m) => m.search).slice(0, limit ?? 15) : await listSearches(limit ?? 15);
+        const unscored = await unscoredCounts(rows.map((r) => r.id));
         return ok({
           searches: rows.map((s) => ({
             search_id: s.id,
@@ -184,6 +193,7 @@ export function createMcpServer(base: string): McpServer {
             status: s.status,
             jobs: s.jobs,
             new_jobs: s.added,
+            unscored_jobs: unscored.get(s.id) ?? 0,
           })),
         });
       } catch (e) {
@@ -225,6 +235,7 @@ export function createMcpServer(base: string): McpServer {
         remote_only: z.boolean().optional(),
         posted_within_days: z.number().int().min(1).max(365).optional(),
         search_id: z.string().optional().describe('Only jobs returned by this search (see list_searches)'),
+        search: z.string().optional().describe('Instead of search_id: the role the search was for, e.g. "AI Research Engineer". Uses the newest search that matches.'),
         search_role: z.string().optional().describe('With search_id: only jobs found by the run for this role (as typed in the search)'),
         search_place: z.string().optional().describe('With search_id: only jobs found by the run for this place (as typed in the search)'),
         years_min: z.number().int().min(0).max(40).optional().describe('Postings that ask for at least this many years of experience'),
@@ -238,6 +249,14 @@ export function createMcpServer(base: string): McpServer {
     },
     async (a) => {
       try {
+        let searchId = a.search_id;
+        let searchRole = a.search_role;
+        if (!searchId && a.search) {
+          const m = (await findSearches(a.search))[0];
+          if (!m) return fail(await noSearchFound(a.search));
+          searchId = m.search.id;
+          searchRole = searchRole ?? m.role ?? undefined;
+        }
         const { jobs, total } = await listJobs({
           state: a.state ?? 'active',
           query: a.query,
@@ -246,8 +265,8 @@ export function createMcpServer(base: string): McpServer {
           unscored: a.unscored_only,
           remote: a.remote_only,
           postedWithinDays: a.posted_within_days,
-          searchId: a.search_id,
-          runRole: a.search_role,
+          searchId,
+          runRole: searchRole,
           runPlace: a.search_place,
           yearsMin: a.years_min,
           yearsMax: a.years_max,
@@ -299,6 +318,85 @@ export function createMcpServer(base: string): McpServer {
       try {
         const r = await addManualJob(a);
         return ok({ job_id: r.id, duplicate: r.duplicate });
+      } catch (e) {
+        return fail(errMessage(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    'jobs_to_score',
+    {
+      title: 'Get jobs that need a fit score',
+      description:
+        'One call to start scoring: returns the jobs that have no fit score yet, with their descriptions, ready to score against get_profile. Narrow it to a past search with search_id or by the role it was for (search, e.g. "AI Research Engineer"); for a search that covered several roles or places you can also give search_role or search_place. Then save the results with score_jobs and call this again for the next batch (scored jobs drop out). Set include_scored to re-score.',
+      inputSchema: {
+        search_id: z.string().optional().describe('A search from list_searches'),
+        search: z.string().optional().describe('Instead of search_id: the role the search was for, e.g. "AI Research Engineer". Uses the newest search that matches, and only that role\'s listings when the search covered several roles.'),
+        search_role: z.string().optional().describe('With a search: only listings found for this role'),
+        search_place: z.string().optional().describe('With a search: only listings found for this place'),
+        state: z.enum(['active', 'all', ...JOB_STATES]).optional().describe('Default active (everything except dismissed)'),
+        include_scored: z.boolean().optional().describe('Also return jobs that already have a score'),
+        limit: z.number().int().min(1).max(25).optional().describe('Jobs per batch. Default 12.'),
+        description_chars: z.number().int().min(500).max(6000).optional().describe('Characters of each description to return. Default 2500.'),
+      },
+      annotations: readOnly,
+    },
+    async (a) => {
+      try {
+        let searchId = a.search_id;
+        let role = a.search_role;
+        let found: SearchView | null = null;
+        if (searchId) {
+          found = (await listSearches(100)).find((s) => s.id === searchId) ?? null;
+          if (!found) return fail(`No search with id ${searchId}. Use list_searches.`);
+        } else if (a.search) {
+          const m = (await findSearches(a.search))[0];
+          if (!m) return fail(await noSearchFound(a.search));
+          found = m.search;
+          searchId = m.search.id;
+          role = role ?? m.role ?? undefined;
+        }
+        const filter = {
+          state: a.state ?? 'active',
+          searchId,
+          runRole: searchId ? role : undefined,
+          runPlace: searchId ? a.search_place : undefined,
+        } as const;
+        const { total: unscoredTotal } = await listJobs({ ...filter, unscored: true, sort: 'newest', limit: 1, offset: 0 });
+        const { jobs, total } = await listJobs({ ...filter, unscored: !a.include_scored, sort: 'newest', limit: a.limit ?? 12, offset: 0 });
+        const cap = a.description_chars ?? 2500;
+        const full = await Promise.all(jobs.map((j) => getJob(j.id)));
+        return ok({
+          search: found
+            ? {
+                search_id: found.id,
+                when: found.created_at,
+                roles: asList(found.query.keywords),
+                places: asList(found.query.location),
+                listings: found.jobs,
+                ...(role ? { only_role: role } : {}),
+                ...(a.search_place ? { only_place: a.search_place } : {}),
+              }
+            : 'all jobs',
+          unscored_in_scope: unscoredTotal,
+          matching: total,
+          returned: jobs.length,
+          jobs: full.filter(Boolean).map((j) => ({
+            ...brief(j!),
+            url: j!.url ?? undefined,
+            seniority: j!.seniority ?? undefined,
+            employment_type: j!.employment_type ?? undefined,
+            existing_reasons: a.include_scored ? j!.score_reasons : undefined,
+            description: j!.description.slice(0, cap),
+            description_truncated: j!.description.length > cap || undefined,
+          })),
+          next: jobs.length
+            ? 'Read get_profile once, score each job strictly from the profile and its description (a job with a short or missing description gets a lower-confidence score and a flag saying so), then call score_jobs. Call jobs_to_score again for the next batch.'
+            : unscoredTotal === 0
+              ? 'Everything in this scope already has a score.'
+              : 'Nothing returned for these filters.',
+        });
       } catch (e) {
         return fail(errMessage(e));
       }

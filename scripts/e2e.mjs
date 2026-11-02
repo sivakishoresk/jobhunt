@@ -214,7 +214,7 @@ async function main() {
   await step('lists all tools', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    for (const n of ['get_profile', 'update_profile', 'search_jobs', 'get_search', 'list_jobs', 'get_job', 'add_job', 'score_jobs', 'set_job_state', 'check_draft', 'save_application', 'list_applications', 'get_application', 'set_application_status'])
+    for (const n of ['get_profile', 'update_profile', 'search_jobs', 'get_search', 'list_jobs', 'get_job', 'add_job', 'score_jobs', 'list_searches', 'jobs_to_score', 'set_job_state', 'check_draft', 'save_application', 'list_applications', 'get_application', 'set_application_status'])
       ok(names.includes(n), `missing tool ${n}`);
     ok(tools.every((t) => t.annotations), 'tools should carry annotations');
     console.log(`      ${names.length} tools`);
@@ -322,6 +322,27 @@ async function main() {
     eq(await total({ search_role: 'applied scientist', search_place: 'Mumbai' }), 1);
     const s = (await call('list_searches', { limit: 1 })).data.searches[0];
     eq([s.roles, s.places], [['ai engineer', 'applied scientist'], ['Bengaluru', 'Mumbai']]);
+  });
+  await step('jobs_to_score finds a past search by the role it was for and returns only that role\'s unscored jobs', async () => {
+    const found = (await call('list_searches', { query: 'Applied Scientist' })).data.searches;
+    eq(found[0].search_id, multi, 'newest match first');
+    ok(found.some((x) => x.search_id === 's_legacy'), 'older matching search is listed too');
+    eq(found[0].unscored_jobs, 4);
+    const sci = (await call('jobs_to_score', { search: 'Applied Scientist' })).data;
+    eq(sci.search.search_id, multi);
+    eq(sci.search.only_role, 'applied scientist');
+    eq([sci.unscored_in_scope, sci.returned], [2, 2]);
+    ok(sci.jobs.every((j) => j.description && j.description.length > 20 && j.score === undefined), 'jobs come with descriptions');
+    eq((await call('jobs_to_score', { search: 'AI Engineer' })).data.returned, 3);
+    eq((await call('jobs_to_score', { search_id: multi, search_place: 'Mumbai' })).data.returned, 1);
+    eq((await call('list_jobs', { search: 'applied scientist', state: 'all' })).data.total, 2);
+    eq((await call('jobs_to_score', { search: 'applied scientist', limit: 1, description_chars: 500 })).data.jobs[0].description.length <= 500, true);
+    const miss = await call('jobs_to_score', { search: 'quantum basket weaver' });
+    ok(miss.isError && /Recent searches/.test(miss.data.error), 'a miss lists recent searches: ' + JSON.stringify(miss.data));
+    await call('score_jobs', { scores: [{ job_id: sci.jobs[0].id, score: 42, reasons: ['test'] }] });
+    const after = (await call('jobs_to_score', { search: 'Applied Scientist' })).data;
+    eq([after.unscored_in_scope, after.returned], [1, 1]);
+    eq((await call('jobs_to_score', { search: 'Applied Scientist', include_scored: true })).data.returned, 2);
   });
   await step('experience levels reach LinkedIn as f_E and are shown in the search list', async () => {
     const r = await call('search_jobs', { keywords: ['ml engineer'], sources: ['linkedin'], experience_levels: ['entry', 'associate'] });

@@ -60,6 +60,7 @@ Claude Code (command line) can use the OAuth flow too, or the fixed-token route:
 
 - "Search Jobhunt for … in … posted in the last 3 days. Score everything new and show the top five with reasons."
 - "Draft an application for the second one." Claude saves it and tells you where to review it. Read the **Gaps Claude found** box and any "check this" warnings.
+- "Score the jobs from my AI Research Engineer search." Claude finds the search by role (`list_searches`), pulls only its unscored jobs with descriptions (`jobs_to_score`), and saves the scores (`score_jobs`).
 - "Mark that application as sent."
 - If a source returned only a short description, open the posting, copy the text, use **Add a posting** in the app, then ask Claude to draft from that.
 
@@ -101,7 +102,7 @@ npm run build
 npm run test:e2e
 ```
 
-This starts a mock Apify server and the built app, then checks the OAuth flow, all 15 tools, search, drafts, DOCX export, and the browser UI with Playwright (screenshots go to `test-output/`).
+This starts a mock Apify server and the built app, then checks the OAuth flow, all 16 tools, search, drafts, DOCX export, and the browser UI with Playwright (screenshots go to `test-output/`).
 
 ## Known limits
 
@@ -112,4 +113,4 @@ This starts a mock Apify server and the built app, then checks the OAuth flow, a
 
 ## Tools Claude gets
 
-`get_profile`, `update_profile`, `search_jobs`, `list_searches`, `get_search`, `list_jobs`, `get_job`, `add_job`, `score_jobs`, `set_job_state`, `check_draft`, `save_application`, `list_applications`, `get_application`, `set_application_status`.
+`get_profile`, `update_profile`, `search_jobs`, `list_searches`, `get_search`, `list_jobs`, `get_job`, `add_job`, `jobs_to_score`, `score_jobs`, `set_job_state`, `check_draft`, `save_application`, `list_applications`, `get_application`, `set_application_status`.

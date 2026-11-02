@@ -286,3 +286,40 @@ export async function scopeForSearch(searchId: string): Promise<SearchScope> {
 export async function jobsForSearch(searchId: string, limit = 50) {
   return listJobs({ searchId, sort: 'newest', limit, state: 'active' });
 }
+
+/** For each search, how many of its listings have no fit score yet (active jobs only). */
+export async function unscoredCounts(ids: string[]): Promise<Map<string, number>> {
+  if (!ids.length) return new Map();
+  const rows = await q(
+    `SELECT sj.search_id, count(*)::int AS n FROM search_jobs sj JOIN jobs jb ON jb.id = sj.job_id
+     WHERE sj.search_id = ANY($1::text[]) AND jb.score IS NULL AND jb.state <> 'dismissed' GROUP BY sj.search_id`,
+    [ids],
+  );
+  return new Map(rows.map((r) => [r.search_id as string, r.n as number]));
+}
+
+export type SearchMatch = { search: SearchView; role: string | null };
+
+const words = (s: string) => s.toLowerCase().split(/[^a-z0-9+#.]+/).filter((w) => w.length >= 2);
+
+/**
+ * Finds searches by what they were for, e.g. "AI Research Engineer". A search matches when every word appears in
+ * one of its roles (then `role` says which) or in its role text as a whole. Newest first; searches with listings first.
+ */
+export async function findSearches(text: string, limit = 60): Promise<SearchMatch[]> {
+  const want = words(text);
+  if (!want.length) return [];
+  const all = await listSearches(limit);
+  const out: SearchMatch[] = [];
+  for (const sx of all) {
+    const roles = asList(sx.query.keywords);
+    const hit = roles.find((r) => want.every((w) => words(r).includes(w)));
+    if (hit) {
+      out.push({ search: sx, role: roles.length > 1 ? hit : null });
+      continue;
+    }
+    const joined = words(roles.join(' '));
+    if (want.every((w) => joined.includes(w))) out.push({ search: sx, role: null });
+  }
+  return [...out.filter((m) => m.search.jobs > 0), ...out.filter((m) => m.search.jobs === 0)];
+}
