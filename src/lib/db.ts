@@ -71,6 +71,12 @@ const SCHEMA: string[] = [
      PRIMARY KEY (search_id, job_id)
    )`,
   `CREATE INDEX IF NOT EXISTS search_jobs_job_idx ON search_jobs(job_id)`,
+  `CREATE TABLE IF NOT EXISTS run_jobs (
+     run_id text NOT NULL,
+     job_id text NOT NULL,
+     PRIMARY KEY (run_id, job_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS run_jobs_job_idx ON run_jobs(job_id)`,
   `CREATE TABLE IF NOT EXISTS applications (
      id text PRIMARY KEY,
      job_id text REFERENCES jobs(id) ON DELETE SET NULL,

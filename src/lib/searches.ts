@@ -96,7 +96,7 @@ async function ingestRun(run: Row, query: SearchQuery, localFilter: boolean, sea
       if (n) jobs.push(n);
     }
     const kept = localFilter ? jobs.filter((x) => matchesKeywords(x, run.kw ?? asList(query.keywords).join(' '))) : jobs;
-    const res = await upsertJobs(searchId, kept);
+    const res = await upsertJobs(searchId, kept, run.id);
     await q(`UPDATE search_runs SET status = 'done', found = $2, added = $3, finished_at = now() WHERE id = $1`, [
       run.id,
       kept.length,
@@ -194,10 +194,47 @@ export async function listSearches(limit = 30): Promise<SearchView[]> {
   });
 }
 
-/** Ids of every job a search returned, for scoping the Jobs page. */
-export async function jobIdsForSearch(searchId: string): Promise<string[]> {
-  const rows = await q('SELECT job_id FROM search_jobs WHERE search_id = $1', [searchId]);
-  return rows.map((r) => r.job_id as string);
+export interface SearchScope {
+  ids: string[];
+  /** Roles and places this search covered, when more than one of either (otherwise nothing to filter by). */
+  roles: string[];
+  places: string[];
+  /** [job id, role index, place index] for every run that returned the job. */
+  rows: [string, number, number][];
+}
+
+/** Ids of every job a search returned, and which role/place run found each one. */
+export async function scopeForSearch(searchId: string): Promise<SearchScope> {
+  const ids = (await q('SELECT job_id FROM search_jobs WHERE search_id = $1', [searchId])).map((r) => r.job_id as string);
+  const s = await q('SELECT query FROM searches WHERE id = $1', [searchId]);
+  const query = (s[0]?.query ?? {}) as SearchQuery;
+  const queryRoles = asList(query.keywords);
+  const queryPlaces = asList(query.location);
+  const attr = await q(
+    `SELECT rj.job_id, r.kw, r.loc FROM run_jobs rj JOIN search_runs r ON r.id = rj.run_id WHERE r.search_id = $1`,
+    [searchId],
+  );
+  const roles: string[] = [...queryRoles];
+  const places: string[] = [...queryPlaces];
+  const at = (list: string[], v: string) => {
+    const i = list.findIndex((x) => x.toLowerCase() === v.toLowerCase());
+    if (i >= 0) return i;
+    list.push(v);
+    return list.length - 1;
+  };
+  const rows: [string, number, number][] = [];
+  const seen = new Set<string>();
+  for (const a of attr) {
+    const role = ((a.kw as string | null) ?? (queryRoles.length === 1 ? queryRoles[0] : '')).trim();
+    const place = ((a.loc as string | null) ?? (queryPlaces.length === 1 ? queryPlaces[0] : '')).trim();
+    const key = `${a.job_id}|${role.toLowerCase()}|${place.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push([a.job_id as string, at(roles, role), at(places, place)]);
+  }
+  // Nothing to filter by unless the search covered several roles or several places.
+  if (!rows.length || (roles.length < 2 && places.length < 2)) return { ids, roles: [], places: [], rows: [] };
+  return { ids, roles, places, rows };
 }
 
 export async function jobsForSearch(searchId: string, limit = 50) {

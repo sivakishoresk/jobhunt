@@ -12,6 +12,11 @@ type Sort = 'newest' | 'score' | 'company';
 const TAB_STATE: Record<Exclude<Tab, 'all'>, JobState> = { inbox: 'new', saved: 'saved', applied: 'applied', dismissed: 'dismissed' };
 const TAB_LABEL: Record<Tab, string> = { inbox: 'Inbox', saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed', all: 'All' };
 
+function toggle<T>(set: Set<T>, v: T): Set<T> {
+  const n = new Set(set);
+  n.has(v) ? n.delete(v) : n.add(v);
+  return n;
+}
 function levelText(codes?: number[]): string {
   return (codes ?? []).map((c) => LINKEDIN_LEVELS.find((l) => l.code === c)?.label ?? '').filter(Boolean).join('/');
 }
@@ -58,6 +63,11 @@ export function Workbench() {
   const [scopeIds, setScopeIds] = useState<Set<string> | null>(null);
   const [newOnly, setNewOnly] = useState(false);
   const [scopeReady, setScopeReady] = useState(false);
+  // Which role / place run found each job, for searches that covered several of either.
+  const [attr, setAttr] = useState<{ roles: string[]; places: string[]; byJob: Map<string, [number, number][]> } | null>(null);
+  const [roleSel, setRoleSel] = useState<Set<number>>(new Set());
+  const [placeSel, setPlaceSel] = useState<Set<number>>(new Set());
+  const [levelSel, setLevelSel] = useState<Set<string>>(new Set());
   const [levels, setLevels] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<Sort>('newest');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -109,14 +119,23 @@ export function Workbench() {
   const selectScope = useCallback(async (id: string) => {
     setScopeId(id);
     setNewOnly(false);
+    setRoleSel(new Set());
+    setPlaceSel(new Set());
+    setLevelSel(new Set());
+    setAttr(null);
     ls('jh.scope', id);
     if (id === 'all') {
       setScopeIds(null);
       return;
     }
     try {
-      const r = await api<{ ids: string[] }>(`/api/searches/${id}/jobs`);
+      const r = await api<{ ids: string[]; roles: string[]; places: string[]; rows: [string, number, number][] }>(`/api/searches/${id}/jobs`);
       setScopeIds(new Set(r.ids));
+      if (r.rows.length) {
+        const byJob = new Map<string, [number, number][]>();
+        for (const [jid, ri, pi] of r.rows) byJob.set(jid, [...(byJob.get(jid) ?? []), [ri, pi]]);
+        setAttr({ roles: r.roles, places: r.places, byJob });
+      }
     } catch {
       setScopeIds(new Set());
     }
@@ -207,6 +226,22 @@ export function Workbench() {
     const since = newOnly ? scopeSearch?.created_at ?? null : null;
     return jobs.filter((j) => scopeIds.has(j.id) && (!since || (j.first_seen != null && j.first_seen >= since)));
   }, [jobs, scopeIds, newOnly, scopeSearch]);
+  // Chip options for the role / place / level filters, counted over the jobs in this view.
+  const facets = useMemo(() => {
+    const live = scoped.filter((j) => j.state !== 'dismissed');
+    const roleN = new Map<number, number>();
+    const placeN = new Map<number, number>();
+    if (attr) {
+      for (const j of live) {
+        const pairs = attr.byJob.get(j.id) ?? [];
+        for (const ri of new Set(pairs.map((x) => x[0]))) roleN.set(ri, (roleN.get(ri) ?? 0) + 1);
+        for (const pi of new Set(pairs.map((x) => x[1]))) placeN.set(pi, (placeN.get(pi) ?? 0) + 1);
+      }
+    }
+    const levelN = new Map<string, number>();
+    for (const j of live) levelN.set(j.seniority ?? '', (levelN.get(j.seniority ?? '') ?? 0) + 1);
+    return { roleN, placeN, levelN };
+  }, [scoped, attr]);
   const terms = useMemo(() => [...new Set([...tokens(text), ...tokens(lastKeywords.current)])], [text, search]);
   const tabCounts = useMemo(() => {
     const c: Record<Tab, number> = { inbox: 0, saved: 0, applied: 0, dismissed: 0, all: 0 };
@@ -232,6 +267,11 @@ export function Workbench() {
           if (!yrsUnstated) return false;
         } else if ((lo != null && j.min_years < lo) || (hi != null && j.min_years > hi)) return false;
       }
+      if (attr && (roleSel.size || placeSel.size)) {
+        const pairs = attr.byJob.get(j.id) ?? [];
+        if (!pairs.some(([ri, pi]) => (!roleSel.size || roleSel.has(ri)) && (!placeSel.size || placeSel.has(pi)))) return false;
+      }
+      if (levelSel.size && !levelSel.has(j.seniority ?? '')) return false;
       if (tab !== 'all' && j.state !== TAB_STATE[tab]) return false;
       if (tab === 'all' && j.state === 'dismissed') return false;
       if (srcFilter.size && !srcFilter.has(j.source)) return false;
@@ -255,9 +295,9 @@ export function Workbench() {
           : when(b) - when(a),
     );
     return out;
-  }, [scoped, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, yrsFrom, yrsTo, yrsUnstated, sort]);
+  }, [scoped, attr, roleSel, placeSel, levelSel, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, yrsFrom, yrsTo, yrsUnstated, sort]);
 
-  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored || yrsFrom !== '' || yrsTo !== '');
+  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored || yrsFrom !== '' || yrsTo !== '' || roleSel.size > 0 || placeSel.size > 0 || levelSel.size > 0);
   function resetFilters() {
     setText('');
     setSrcFilter(new Set());
@@ -269,6 +309,9 @@ export function Workbench() {
     setYrsFrom('');
     setYrsTo('');
     setYrsUnstated(true);
+    setRoleSel(new Set());
+    setPlaceSel(new Set());
+    setLevelSel(new Set());
   }
 
   // keep a valid selection
@@ -539,6 +582,32 @@ export function Workbench() {
         </ul>
 
         <h2>Filters</h2>
+        {attr && attr.roles.length > 1 && (
+          <>
+            <label className="field" style={{ marginTop: 0 }}>Role searched</label>
+            <div className="row" role="group" aria-label="Role searched">
+              {attr.roles.map((r, i) => (
+                <button key={r + i} className="chip" aria-pressed={roleSel.has(i)} onClick={() => setRoleSel((p) => toggle(p, i))}>
+                  {r || 'Any role'}
+                  <span className="n">{facets.roleN.get(i) ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {attr && attr.places.length > 1 && (
+          <>
+            <label className="field">Place searched</label>
+            <div className="row" role="group" aria-label="Place searched">
+              {attr.places.map((r, i) => (
+                <button key={r + i} className="chip" aria-pressed={placeSel.has(i)} onClick={() => setPlaceSel((p) => toggle(p, i))}>
+                  {r || 'Anywhere'}
+                  <span className="n">{facets.placeN.get(i) ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <label className="field" htmlFor="minscore" style={{ marginTop: 0 }}>
           Fit score
         </label>
@@ -589,6 +658,26 @@ export function Workbench() {
           <label className="check" style={{ marginTop: '0.4rem' }}>
             <input type="checkbox" checked={yrsUnstated} onChange={(e) => setYrsUnstated(e.target.checked)} /> Keep postings that don&apos;t say
           </label>
+        )}
+        {facets.levelN.size > 1 && (
+          <>
+            <label className="field">Seniority</label>
+            <div className="row" role="group" aria-label="Seniority">
+              {[...facets.levelN.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .map(([lv, n]) => (
+                  <button
+                    key={lv || 'none'}
+                    className="chip"
+                    aria-pressed={levelSel.has(lv)}
+                    onClick={() => setLevelSel((p) => toggle(p, lv))}
+                  >
+                    {lv || 'Not stated'}
+                    <span className="n">{n}</span>
+                  </button>
+                ))}
+            </div>
+          </>
         )}
         {sourceIds.length > 1 && (
           <>

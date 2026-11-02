@@ -22,7 +22,18 @@ const ymd = (d) => d.toISOString().slice(0, 10);
 function items(actor, input) {
   const out = [];
   if (actor === 'curious_coder/linkedin-jobs-scraper') {
+    // A few special searches return different subsets so role/place attribution can be tested.
+    let kw = '';
+    let loc = '';
+    try {
+      const u = new URL(input.urls?.[0] ?? '');
+      kw = (u.searchParams.get('keywords') ?? '').toLowerCase();
+      loc = (u.searchParams.get('location') ?? '').toLowerCase();
+    } catch {}
+    const keepRole = (i) => (kw === 'ai engineer' ? i % 2 === 0 : kw === 'applied scientist' ? i % 3 === 0 : true);
+    const keepPlace = (i) => (loc === 'bengaluru' && kw && ['ai engineer', 'applied scientist'].includes(kw) ? i % 4 === 0 : loc === 'mumbai' && ['ai engineer', 'applied scientist'].includes(kw) ? i % 4 === 1 : true);
     for (let i = 0; i < 12; i++) {
+      if (!keepRole(i) || !keepPlace(i)) continue;
       const id = String(3692563200 + i);
       out.push({
         id, link: `https://www.linkedin.com/jobs/view/${id}`, title: TITLES[i], companyName: COMPANIES[i], location: CITIES[i % 4],
@@ -32,7 +43,7 @@ function items(actor, input) {
         seniorityLevel: 'Mid-Senior level', employmentType: 'Full-time', applyUrl: '',
       });
     }
-    out.push({ id: '3692563200', link: 'https://www.linkedin.com/jobs/view/3692563200', title: TITLES[0], companyName: COMPANIES[0], location: CITIES[0], postedAt: ymd(day(0)) }); // duplicate
+    if (keepRole(0) && keepPlace(0)) out.push({ id: '3692563200', link: 'https://www.linkedin.com/jobs/view/3692563200', title: TITLES[0], companyName: COMPANIES[0], location: CITIES[0], postedAt: ymd(day(0)) }); // duplicate
     out.push({ id: '1', description: 'broken item with no title' });
   } else if (actor === 'fetchclub/linkedin-jobs-scraper') {
     for (let i = 0; i < 8; i++) {

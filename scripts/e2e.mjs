@@ -294,6 +294,22 @@ async function main() {
     eq((await call('list_jobs', { search_id: search2, state: 'all', limit: 100 })).data.total, 12);
     eq((await call('list_jobs', { search_id: searchId, state: 'all', limit: 100 })).data.total, first.jobs);
   });
+  let multi;
+  await step('a multi-role, multi-place search records which run found each job', async () => {
+    const r = await call('search_jobs', { keywords: ['ai engineer', 'applied scientist'], location: ['Bengaluru', 'Mumbai'], sources: ['linkedin'] });
+    eq(r.data.status, 'done', JSON.stringify(r.data.sources));
+    multi = r.data.search_id;
+    eq(r.data.sources.length, 4, 'two roles x two places = four runs');
+    const total = (extra) => call('list_jobs', { search_id: multi, state: 'all', limit: 100, ...extra }).then((x) => x.data.total);
+    eq(await total({}), 4);
+    eq(await total({ search_role: 'ai engineer' }), 3);
+    eq(await total({ search_role: 'Applied Scientist' }), 2);
+    eq(await total({ search_place: 'Mumbai' }), 1);
+    eq(await total({ search_role: 'ai engineer', search_place: 'Mumbai' }), 0, 'no job came from that pair');
+    eq(await total({ search_role: 'applied scientist', search_place: 'Mumbai' }), 1);
+    const s = (await call('list_searches', { limit: 1 })).data.searches[0];
+    eq([s.roles, s.places], [['ai engineer', 'applied scientist'], ['Bengaluru', 'Mumbai']]);
+  });
   await step('experience levels reach LinkedIn as f_E and are shown in the search list', async () => {
     const r = await call('search_jobs', { keywords: ['ml engineer'], sources: ['linkedin'], experience_levels: ['entry', 'associate'] });
     eq(r.data.status, 'done');
@@ -446,6 +462,13 @@ async function main() {
     const ids = (await (await web(`/api/searches/${search2}/jobs`)).json()).ids;
     eq(ids.length, 12);
   });
+  await step('the scope endpoint returns role and place attribution only when there is something to filter', async () => {
+    const m = await (await web(`/api/searches/${multi}/jobs`)).json();
+    eq([m.roles, m.places], [['ai engineer', 'applied scientist'], ['Bengaluru', 'Mumbai']]);
+    ok(m.rows.length >= 5, 'rows ' + m.rows.length);
+    const single = await (await web(`/api/searches/${search2}/jobs`)).json();
+    eq([single.roles, single.places, single.rows.length], [[], [], 0]);
+  });
   await step('web API lists jobs with snippets and patches a job', async () => {
     const j = await (await web('/api/jobs')).json();
     ok(j.jobs.length >= 10, 'got ' + j.jobs.length);
@@ -526,6 +549,31 @@ async function browserTests(cookie, appId) {
     await page.waitForSelector('text=This search returned no listings');
     await page.locator('.past-item', { hasText: /^ml engineer/ }).first().click();
     await page.waitForSelector('.row-job');
+  });
+  await step('inside a multi-role search the role and place chips filter the results', async () => {
+    await page.locator('.past-item', { hasText: /^ai engineer/ }).first().click();
+    await page.waitForSelector('.scope b');
+    await page.click('.tabs button:has-text("All")');
+    const rows = async () => page.locator('.row-job').count();
+    const chip = (group, text) => page.locator(`[aria-label="${group}"] .chip`, { hasText: text });
+    eq(await rows(), 4);
+    eq((await chip('Role searched', 'ai engineer').innerText()).replace(/\s+/g, ' '), 'ai engineer 3');
+    eq((await chip('Role searched', 'applied scientist').innerText()).replace(/\s+/g, ' '), 'applied scientist 2');
+    eq((await chip('Place searched', 'Mumbai').innerText()).replace(/\s+/g, ' '), 'Mumbai 1');
+    await chip('Role searched', 'ai engineer').click();
+    eq(await rows(), 3);
+    await chip('Place searched', 'Mumbai').click();
+    eq(await rows(), 0, 'no job from the ai engineer + Mumbai run');
+    await chip('Role searched', 'ai engineer').click();
+    await chip('Role searched', 'applied scientist').click();
+    eq(await rows(), 1);
+    await shot('02b-role-place-filter');
+    await page.click('button:has-text("Clear filters")');
+    eq(await rows(), 4);
+    ok((await page.locator('[aria-label="Role searched"]').count()) === 1);
+    await page.locator('.past-item', { hasText: /^machine learning engineer/ }).first().click();
+    await page.waitForSelector('.scope b');
+    eq(await page.locator('[aria-label="Role searched"]').count(), 0, 'single-role searches have nothing to split by');
   });
   await step('the workbench lists jobs, with the first selected and detail shown', async () => {
     await page.waitForSelector('.row-job');

@@ -4,6 +4,7 @@ import { getProfile, saveProfile, claudeView, profileIsEmpty, ProfilePatchSchema
 import { startSearch, advanceSearch, jobsForSearch, listSearches, type SearchView } from '@/lib/searches';
 import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
 import { termsText } from '@/lib/terms';
+import { asList } from '@/lib/sources';
 import { listJobs, getJob, addManualJob, saveScores, setJobState, JOB_STATES, type JobSummary } from '@/lib/jobs';
 import { buildDraft, DraftInputSchema } from '@/lib/drafts';
 import {
@@ -174,6 +175,8 @@ export function createMcpServer(base: string): McpServer {
           searches: rows.map((s) => ({
             search_id: s.id,
             when: s.created_at,
+            roles: asList(s.query.keywords),
+            places: asList(s.query.location),
             keywords: termsText(s.query.keywords),
             location: termsText(s.query.location) || undefined,
             posted_within_days: s.query.days ?? undefined,
@@ -222,6 +225,8 @@ export function createMcpServer(base: string): McpServer {
         remote_only: z.boolean().optional(),
         posted_within_days: z.number().int().min(1).max(365).optional(),
         search_id: z.string().optional().describe('Only jobs returned by this search (see list_searches)'),
+        search_role: z.string().optional().describe('With search_id: only jobs found by the run for this role (as typed in the search)'),
+        search_place: z.string().optional().describe('With search_id: only jobs found by the run for this place (as typed in the search)'),
         years_min: z.number().int().min(0).max(40).optional().describe('Postings that ask for at least this many years of experience'),
         years_max: z.number().int().min(0).max(40).optional().describe('Postings that ask for at most this many years of experience'),
         include_unstated_years: z.boolean().optional().describe('With years_min/years_max: also include postings that state no number. Default true.'),
@@ -242,6 +247,8 @@ export function createMcpServer(base: string): McpServer {
           remote: a.remote_only,
           postedWithinDays: a.posted_within_days,
           searchId: a.search_id,
+          runRole: a.search_role,
+          runPlace: a.search_place,
           yearsMin: a.years_min,
           yearsMax: a.years_max,
           yearsUnstated: a.include_unstated_years,

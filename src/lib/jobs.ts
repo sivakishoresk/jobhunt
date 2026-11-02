@@ -66,6 +66,9 @@ export interface JobFilters {
   postedWithinDays?: number;
   remote?: boolean;
   searchId?: string;
+  /** With searchId: only jobs found by the run for this role / this place (case-insensitive, exact). */
+  runRole?: string;
+  runPlace?: string;
   /** Only jobs first seen at or after this time (used for "new from this search"). */
   firstSeenAfter?: string;
   /** Years of experience the posting asks for, inclusive range. */
@@ -104,6 +107,18 @@ export async function listJobs(f: JobFilters = {}): Promise<{ jobs: JobSummary[]
     where.push(f.yearsUnstated === false ? range : `(${range} OR min_years IS NULL)`);
   }
   if (f.searchId) add('id IN (SELECT job_id FROM search_jobs WHERE search_id = ?)', f.searchId);
+  if (f.searchId && (f.runRole || f.runPlace)) {
+    const parts = ['r.search_id = ?'];
+    const vals: unknown[] = [f.searchId];
+    if (f.runRole) { parts.push('lower(r.kw) = lower(?)'); vals.push(f.runRole); }
+    if (f.runPlace) { parts.push("lower(COALESCE(r.loc, '')) = lower(?)"); vals.push(f.runPlace); }
+    const marks = parts.map((p) => {
+      if (!p.includes('?')) return p;
+      params.push(vals.shift());
+      return p.replace('?', `$${params.length}`);
+    });
+    where.push(`id IN (SELECT rj.job_id FROM run_jobs rj JOIN search_runs r ON r.id = rj.run_id WHERE ${marks.join(' AND ')})`);
+  }
   if (f.query?.trim()) {
     const like = `%${f.query.trim().replace(/[%_\\]/g, '\\$&')}%`;
     params.push(like);
@@ -211,7 +226,7 @@ ON CONFLICT (dedupe_key) DO UPDATE SET
   url = COALESCE(jobs.url, EXCLUDED.url)
 RETURNING id, (xmax = 0) AS inserted`;
 
-export async function upsertJobs(searchId: string | null, jobs: NormJob[]): Promise<{ added: number; seen: number; ids: string[] }> {
+export async function upsertJobs(searchId: string | null, jobs: NormJob[], runId: string | null = null): Promise<{ added: number; seen: number; ids: string[] }> {
   const byKey = new Map<string, NormJob>();
   for (const job of jobs) if (!byKey.has(job.dedupe_key)) byKey.set(job.dedupe_key, job);
   const unique = [...byKey.values()];
@@ -230,6 +245,13 @@ export async function upsertJobs(searchId: string | null, jobs: NormJob[]): Prom
       `INSERT INTO search_jobs (search_id, job_id)
        SELECT $1, jsonb_array_elements_text($2::jsonb) ON CONFLICT DO NOTHING`,
       [searchId, j(ids)],
+    );
+  }
+  if (runId && ids.length) {
+    await q(
+      `INSERT INTO run_jobs (run_id, job_id)
+       SELECT $1, jsonb_array_elements_text($2::jsonb) ON CONFLICT DO NOTHING`,
+      [runId, j(ids)],
     );
   }
   return { added, seen: unique.length, ids };

@@ -5,6 +5,7 @@ A private job-search workbench that you host yourself and connect to Claude.
 - **Search** LinkedIn and Y Combinator's Work at a Startup through Apify, from the page or by asking Claude.
 - **Filter** instantly in the browser: text, score, posted date, remote, salary, source. Matches are highlighted.
 - **Past searches.** Every search is kept. Open one from the left rail to see only the listings it returned, or tick "Only new" to see just what it found for the first time. Jobs you already had are still listed under the search that returned them.
+- **Role and place filters.** Inside a search that covered several roles or places, chips for each role and place (with counts) split its listings by which run found them. Seniority chips appear whenever the listings differ.
 - **Experience.** Each posting's years of experience are read from its text (the highest requirement found; shown as "3–5 yrs" or "5+ yrs"). Filter by a range, and choose whether to keep postings that don't say. For LinkedIn you can also pick experience levels before searching, which LinkedIn applies before you are billed.
 - **Triage** with the keyboard: `j`/`k` move, `s` save, `x` dismiss, `a` mark applied, `u` undo, `/` filter, `?` help.
 - **Claude scores and drafts.** Claude reads your profile and the postings, scores fit, and saves a tailored resume and cover letter. You review and edit them in the app, then download DOCX or print to PDF.
