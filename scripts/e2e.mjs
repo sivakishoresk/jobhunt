@@ -39,7 +39,20 @@ async function seedLegacyDb() {
       tags jsonb NOT NULL DEFAULT '[]'::jsonb, state text NOT NULL DEFAULT 'new', score int, score_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
       score_flags jsonb NOT NULL DEFAULT '[]'::jsonb, first_seen timestamptz NOT NULL DEFAULT now(), last_seen timestamptz NOT NULL DEFAULT now(), notes text NOT NULL DEFAULT '');
     INSERT INTO jobs (id, dedupe_key, source, title, company, description, state)
-      VALUES ('j_legacy01', 'manual:legacy', 'manual', 'Legacy Engineer', 'Old Co', 'Build things. We need 4 years of industry experience.', 'dismissed');`);
+      VALUES ('j_legacy01', 'manual:legacy', 'manual', 'Legacy Engineer', 'Old Co', 'Build things. We need 4 years of industry experience.', 'dismissed');
+    -- A two-role, two-place search made before run-level tracking: jobs are linked to the search but not to the runs that found them.
+    CREATE TABLE searches (id text PRIMARY KEY, query jsonb NOT NULL, status text NOT NULL DEFAULT 'running', created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz);
+    CREATE TABLE search_runs (id text PRIMARY KEY, search_id text NOT NULL, source text NOT NULL, actor text NOT NULL, apify_run_id text, dataset_id text,
+      status text NOT NULL DEFAULT 'running', error text, found int NOT NULL DEFAULT 0, added int NOT NULL DEFAULT 0, started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, kw text, loc text);
+    CREATE TABLE search_jobs (search_id text NOT NULL, job_id text NOT NULL, PRIMARY KEY (search_id, job_id));
+    INSERT INTO searches (id, query, status, created_at) VALUES ('s_legacy', '{"keywords":["ai engineer","applied scientist"],"location":["Bengaluru","Mumbai"],"remote":false,"days":7}', 'done', now() - interval '9 days');
+    INSERT INTO search_runs (id, search_id, source, actor, dataset_id, status, kw, loc) VALUES
+      ('r_l1', 's_legacy', 'legacy', 'x/y', 'legacy1', 'done', 'ai engineer', 'Bengaluru'),
+      ('r_l2', 's_legacy', 'legacy', 'x/y', 'legacy2', 'done', 'applied scientist', 'Mumbai');
+    INSERT INTO jobs (id, dedupe_key, source, title, company, state) VALUES
+      ('j_old1', 'legacy:3699999001', 'legacy', 'Legacy 3699999001', 'Old Co', 'dismissed'), ('j_old2', 'legacy:3699999002', 'legacy', 'Legacy 3699999002', 'Old Co', 'dismissed'),
+      ('j_old3', 'legacy:3699999003', 'legacy', 'Legacy 3699999003', 'Old Co', 'dismissed'), ('j_old4', 'legacy:3699999004', 'legacy', 'Legacy 3699999004', 'Old Co', 'dismissed');
+    INSERT INTO search_jobs (search_id, job_id) VALUES ('s_legacy','j_old1'), ('s_legacy','j_old2'), ('s_legacy','j_old3'), ('s_legacy','j_old4');`);
   await pg.close();
 }
 
@@ -461,6 +474,15 @@ async function main() {
     ok(list.length >= 2 && list.every((x) => typeof x.jobs === 'number'));
     const ids = (await (await web(`/api/searches/${search2}/jobs`)).json()).ids;
     eq(ids.length, 12);
+  });
+  await step('a multi-role search made before run tracking gets its roles and places rebuilt from Apify', async () => {
+    const m = await (await web('/api/searches/s_legacy/jobs')).json();
+    eq([m.roles, m.places], [['ai engineer', 'applied scientist'], ['Bengaluru', 'Mumbai']]);
+    const by = (ri, pi) => m.rows.filter((r) => r[1] === ri && r[2] === pi).length;
+    eq([by(0, 0), by(1, 1), by(0, 1), by(1, 0)], [3, 1, 0, 0]);
+    const again = await (await web('/api/searches/s_legacy/jobs')).json();
+    eq(again.rows.length, 4, 'a second look changes nothing');
+    eq((await call('list_jobs', { search_id: 's_legacy', search_role: 'applied scientist', state: 'all' })).data.total, 1);
   });
   await step('the scope endpoint returns role and place attribution only when there is something to filter', async () => {
     const m = await (await web(`/api/searches/${multi}/jobs`)).json();

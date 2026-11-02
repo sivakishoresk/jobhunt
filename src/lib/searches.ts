@@ -1,6 +1,5 @@
-import { q, type Row } from './db';
+import { q, j, kvGet, kvSet, type Row } from './db';
 import { newId, errMessage, truncate } from './util';
-import { j } from './db';
 import { getSources, renderInput, runQueries, MAX_RUNS, MAX_TERMS, asList, type SearchQuery } from './sources';
 import { startRun, getRun, getItems, TERMINAL_FAIL, ApifyError } from './apify';
 import { normalizeItem, matchesKeywords, type NormJob } from './normalize';
@@ -203,8 +202,55 @@ export interface SearchScope {
   rows: [string, number, number][];
 }
 
+/**
+ * Searches run before run-level tracking existed have no record of which run found which job.
+ * Apify keeps each run's dataset for a while, so read it again (free) and rebuild the link.
+ * Each run is tried once; a dataset that has expired is simply skipped.
+ */
+async function reattributeRuns(searchId: string): Promise<void> {
+  const runs = await q(
+    `SELECT r.* FROM search_runs r
+     WHERE r.search_id = $1 AND r.status = 'done' AND r.dataset_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM run_jobs rj WHERE rj.run_id = r.id)`,
+    [searchId],
+  );
+  if (!runs.length) return;
+  const sources = await getSources();
+  await Promise.all(
+    runs.slice(0, MAX_RUNS).map(async (run) => {
+      const flag = `reattr:${run.id}`;
+      if (await kvGet(flag)) return;
+      try {
+        const items = await getItems(run.dataset_id, 500);
+        const keys = new Set<string>();
+        const local = !!sources.find((x) => x.id === run.source)?.localKeywordFilter;
+        for (const it of items) {
+          const n = normalizeItem(run.source, it);
+          if (!n) continue;
+          if (local && run.kw && !matchesKeywords(n, run.kw)) continue;
+          keys.add(n.dedupe_key);
+        }
+        if (keys.size) {
+          await q(
+            `INSERT INTO run_jobs (run_id, job_id)
+             SELECT $1, j.id FROM jobs j
+             WHERE j.dedupe_key = ANY($2::text[]) AND j.id IN (SELECT job_id FROM search_jobs WHERE search_id = $3)
+             ON CONFLICT DO NOTHING`,
+            [run.id, [...keys], searchId],
+          );
+        }
+        await kvSet(flag, true);
+      } catch (e) {
+        // A dataset Apify no longer has will never come back; anything else may be temporary.
+        if (e instanceof ApifyError && e.status === 404) await kvSet(flag, true);
+      }
+    }),
+  );
+}
+
 /** Ids of every job a search returned, and which role/place run found each one. */
 export async function scopeForSearch(searchId: string): Promise<SearchScope> {
+  await reattributeRuns(searchId).catch(() => {});
   const ids = (await q('SELECT job_id FROM search_jobs WHERE search_id = $1', [searchId])).map((r) => r.job_id as string);
   const s = await q('SELECT query FROM searches WHERE id = $1', [searchId]);
   const query = (s[0]?.query ?? {}) as SearchQuery;

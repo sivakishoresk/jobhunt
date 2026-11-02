@@ -102,6 +102,11 @@ const server = http.createServer(async (req, res) => {
     const status = r.actor.startsWith('fail/') ? 'FAILED' : Date.now() - r.at >= (r.actor.startsWith('slow/') ? 1e9 : DELAY) ? 'SUCCEEDED' : 'RUNNING';
     return send(200, { data: { id: m[1], status, defaultDatasetId: m[1].replace('run', 'ds'), statusMessage: status === 'FAILED' ? 'Actor crashed' : undefined } });
   }
+  if (req.method === 'GET' && (m = url.pathname.match(/^\/v2\/datasets\/(legacy\d)\/items$/))) {
+    // Datasets of searches made before run-level tracking existed (seeded by the e2e test).
+    const mk = (id, city) => ({ id: String(id), link: `https://www.linkedin.com/jobs/view/${id}`, title: `Legacy ${id}`, companyName: 'Old Co', location: city });
+    return send(200, m[1] === 'legacy1' ? [mk(3699999001, 'Bengaluru'), mk(3699999002, 'Bengaluru'), mk(3699999003, 'Bengaluru')] : m[1] === 'legacy2' ? [mk(3699999004, 'Mumbai')] : []);
+  }
   if (req.method === 'GET' && (m = url.pathname.match(/^\/v2\/datasets\/ds(\d+)\/items$/))) {
     const r = runs.get(`run${m[1]}`);
     const limit = Number(url.searchParams.get('limit') ?? 1000);
