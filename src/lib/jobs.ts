@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { q, j, type Row } from './db';
 import { newId, clamp } from './util';
 import type { NormJob } from './normalize';
+import { extractYears } from './experience';
 
 export const JOB_STATES = ['new', 'saved', 'applied', 'dismissed'] as const;
 export type JobState = (typeof JOB_STATES)[number];
@@ -26,6 +27,8 @@ export interface JobSummary {
   score: number | null;
   snippet: string;
   desc_len: number;
+  min_years: number | null;
+  max_years: number | null;
 }
 
 function mapSummary(r: Row): JobSummary {
@@ -47,11 +50,13 @@ function mapSummary(r: Row): JobSummary {
     score: r.score ?? null,
     snippet: r.snippet ?? '',
     desc_len: Number(r.desc_len ?? 0),
+    min_years: r.min_years ?? null,
+    max_years: r.max_years ?? null,
   };
 }
 
 const SUMMARY_COLS = `id, source, title, company, location, remote, url, posted_at, first_seen, salary,
-  employment_type, seniority, tags, state, score, left(description, 600) AS snippet, length(description) AS desc_len`;
+  employment_type, seniority, tags, state, score, left(description, 600) AS snippet, length(description) AS desc_len, min_years, max_years`;
 
 export interface JobFilters {
   state?: string;
@@ -61,6 +66,13 @@ export interface JobFilters {
   postedWithinDays?: number;
   remote?: boolean;
   searchId?: string;
+  /** Only jobs first seen at or after this time (used for "new from this search"). */
+  firstSeenAfter?: string;
+  /** Years of experience the posting asks for, inclusive range. */
+  yearsMin?: number;
+  yearsMax?: number;
+  /** With a years range: also keep postings that don't state a number. Defaults to true. */
+  yearsUnstated?: boolean;
   unscored?: boolean;
   sort?: 'newest' | 'score' | 'company';
   limit?: number;
@@ -83,6 +95,14 @@ export async function listJobs(f: JobFilters = {}): Promise<{ jobs: JobSummary[]
   if (f.remote) where.push('remote = true');
   if (f.unscored) where.push('score IS NULL');
   if (f.postedWithinDays) add(`COALESCE(posted_at, first_seen) > now() - (? || ' days')::interval`, String(f.postedWithinDays));
+  if (f.firstSeenAfter) add('first_seen >= ?::timestamptz', f.firstSeenAfter);
+  if (f.yearsMin != null || f.yearsMax != null) {
+    const lo = f.yearsMin ?? 0;
+    const hi = f.yearsMax ?? 99;
+    params.push(lo, hi);
+    const range = `(min_years >= $${params.length - 1} AND min_years <= $${params.length})`;
+    where.push(f.yearsUnstated === false ? range : `(${range} OR min_years IS NULL)`);
+  }
   if (f.searchId) add('id IN (SELECT job_id FROM search_jobs WHERE search_id = ?)', f.searchId);
   if (f.query?.trim()) {
     const like = `%${f.query.trim().replace(/[%_\\]/g, '\\$&')}%`;
@@ -172,16 +192,18 @@ WITH incoming AS (
   SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(
     id text, dedupe_key text, source text, external_id text, title text, company text, location text,
     remote boolean, url text, apply_url text, description text, posted_at text, salary text,
-    employment_type text, seniority text, tags jsonb)
+    employment_type text, seniority text, tags jsonb, min_years int, max_years int)
 )
 INSERT INTO jobs (id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
-                  description, posted_at, salary, employment_type, seniority, tags)
+                  description, posted_at, salary, employment_type, seniority, tags, min_years, max_years)
 SELECT id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
        description, NULLIF(posted_at, '')::timestamptz, salary, employment_type, seniority,
-       COALESCE(tags, '[]'::jsonb)
+       COALESCE(tags, '[]'::jsonb), min_years, max_years
 FROM incoming
 ON CONFLICT (dedupe_key) DO UPDATE SET
   last_seen = now(),
+  min_years = CASE WHEN length(EXCLUDED.description) > length(jobs.description) THEN EXCLUDED.min_years ELSE jobs.min_years END,
+  max_years = CASE WHEN length(EXCLUDED.description) > length(jobs.description) THEN EXCLUDED.max_years ELSE jobs.max_years END,
   description = CASE WHEN length(EXCLUDED.description) > length(jobs.description) THEN EXCLUDED.description ELSE jobs.description END,
   posted_at = COALESCE(jobs.posted_at, EXCLUDED.posted_at),
   salary = COALESCE(jobs.salary, EXCLUDED.salary),
@@ -225,6 +247,7 @@ export async function addManualJob(input: {
     .update([input.url ?? '', input.title, input.company, input.description.slice(0, 300)].join('|').toLowerCase())
     .digest('hex')
     .slice(0, 16);
+  const yrs = extractYears(input.description);
   const job: NormJob = {
     dedupe_key: `manual:${key}`,
     source: 'manual',
@@ -241,6 +264,8 @@ export async function addManualJob(input: {
     employment_type: null,
     seniority: null,
     tags: [],
+    min_years: yrs.min,
+    max_years: yrs.max,
   };
   const res = await upsertJobs(null, [job]);
   return { id: res.ids[0], duplicate: res.added === 0 };

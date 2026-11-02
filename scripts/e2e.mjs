@@ -27,7 +27,24 @@ const env = {
 fs.rmSync('.data/e2e-pglite', { recursive: true, force: true });
 fs.mkdirSync('test-output', { recursive: true });
 
+// A database made by the first version of the app (no years columns), to check the upgrade path.
+async function seedLegacyDb() {
+  const { PGlite } = require('@electric-sql/pglite');
+  fs.mkdirSync('.data', { recursive: true });
+  const pg = new PGlite('.data/e2e-pglite');
+  await pg.exec(`CREATE TABLE kv (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE jobs (id text PRIMARY KEY, dedupe_key text NOT NULL UNIQUE, source text NOT NULL, external_id text, title text NOT NULL,
+      company text NOT NULL DEFAULT '', location text NOT NULL DEFAULT '', remote boolean NOT NULL DEFAULT false, url text, apply_url text,
+      description text NOT NULL DEFAULT '', posted_at timestamptz, salary text, employment_type text, seniority text,
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb, state text NOT NULL DEFAULT 'new', score int, score_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+      score_flags jsonb NOT NULL DEFAULT '[]'::jsonb, first_seen timestamptz NOT NULL DEFAULT now(), last_seen timestamptz NOT NULL DEFAULT now(), notes text NOT NULL DEFAULT '');
+    INSERT INTO jobs (id, dedupe_key, source, title, company, description, state)
+      VALUES ('j_legacy01', 'manual:legacy', 'manual', 'Legacy Engineer', 'Old Co', 'Build things. We need 4 years of industry experience.', 'dismissed');`);
+  await pg.close();
+}
+
 const procs = [];
+await seedLegacyDb();
 function start(cmd, args, name) {
   const p = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   p.stdout.on('data', (d) => process.env.E2E_VERBOSE && process.stdout.write(`[${name}] ${d}`));
@@ -210,7 +227,7 @@ async function main() {
     ids = g;
   });
 
-  let searchId, jobs;
+  let searchId, jobs, search2;
   await step('search_jobs runs both sources and waits for results', async () => {
     const t0 = Date.now();
     const r = await call('search_jobs', { keywords: ['machine learning engineer'], location: ['Bengaluru'], posted_within_days: 7 });
@@ -240,6 +257,22 @@ async function main() {
     const r = await call('list_jobs', { state: 'all', source: 'linkedin', limit: 100 });
     eq(r.data.total, 12, 'linkedin should have 12 unique jobs');
   });
+  await step('each posting carries the years of experience it asks for', async () => {
+    const r = await call('list_jobs', { state: 'all', source: 'linkedin', limit: 100 });
+    const count = (label) => r.data.jobs.filter((x) => x.years_asked === label).length;
+    eq([count('5+ yrs'), count('2–4 yrs'), count('1+ yrs'), r.data.jobs.filter((x) => !x.years_asked).length], [3, 3, 3, 3]);
+  });
+  await step('the years filter keeps the right postings', async () => {
+    const base = { state: 'all', source: 'linkedin', limit: 100 };
+    eq((await call('list_jobs', { ...base, years_max: 3, include_unstated_years: false })).data.total, 6);
+    eq((await call('list_jobs', { ...base, years_max: 3 })).data.total, 9);
+    eq((await call('list_jobs', { ...base, years_min: 2, years_max: 3, include_unstated_years: false })).data.total, 3);
+    eq((await call('list_jobs', { ...base, years_min: 5, include_unstated_years: false })).data.total, 3);
+  });
+  await step('a database from the first version upgrades and is backfilled', async () => {
+    const g = (await call('get_job', { job_id: 'j_legacy01' })).data;
+    eq(g.min_years, 4);
+  });
   await step('the YC source filtered by keywords locally', async () => {
     const r = await call('list_jobs', { state: 'all', source: 'yc', limit: 100 });
     ok(r.data.total > 0 && r.data.total <= 10, 'yc total ' + r.data.total);
@@ -248,8 +281,30 @@ async function main() {
     const r = await call('search_jobs', { keywords: ['machine learning engineer'], location: ['Bengaluru'], sources: ['linkedin'] });
     eq(r.data.status, 'done');
     eq(r.data.sources[0].new, 0, 'second search should add nothing');
+    search2 = r.data.search_id;
+  });
+  await step('past searches are listed, each with every job it returned (new or already known)', async () => {
+    const r = (await call('list_searches')).data.searches;
+    ok(r.length >= 2, 'expected two searches');
+    const second = r.find((x) => x.search_id === search2);
+    eq(second.jobs, 12, 'second search returned the same 12 linkedin jobs');
+    eq(second.new_jobs, 0);
+    const first = r.find((x) => x.search_id === searchId);
+    ok(first.jobs >= 20, 'first search jobs ' + first.jobs);
+    eq((await call('list_jobs', { search_id: search2, state: 'all', limit: 100 })).data.total, 12);
+    eq((await call('list_jobs', { search_id: searchId, state: 'all', limit: 100 })).data.total, first.jobs);
+  });
+  await step('experience levels reach LinkedIn as f_E and are shown in the search list', async () => {
+    const r = await call('search_jobs', { keywords: ['ml engineer'], sources: ['linkedin'], experience_levels: ['entry', 'associate'] });
+    eq(r.data.status, 'done');
+    const log = await (await fetch('http://localhost:4010/__log')).json();
+    const li = log.filter((l) => l.actor === 'curious_coder/linkedin-jobs-scraper').at(-1);
+    eq(new URL(li.input.urls[0]).searchParams.get('f_E'), '2,3');
+    const s = (await call('list_searches', { limit: 1 })).data.searches[0];
+    eq(s.experience_levels, ['Entry level', 'Associate']);
   });
   let jobA, jobB;
+
   await step('get_job returns a clean description; HTML was stripped', async () => {
     const li = (await call('list_jobs', { source: 'linkedin', limit: 5, sort: 'newest' })).data.jobs;
     jobA = li[0].id;
@@ -385,6 +440,12 @@ async function main() {
     const r = await web('/api/jobs/' + jobA, { method: 'PATCH', headers: { origin: 'https://evil.example' }, body: '{"state":"new"}' });
     eq(r.status, 403);
   });
+  await step('the web API lists past searches and the job ids of one', async () => {
+    const list = (await (await web('/api/searches')).json()).searches;
+    ok(list.length >= 2 && list.every((x) => typeof x.jobs === 'number'));
+    const ids = (await (await web(`/api/searches/${search2}/jobs`)).json()).ids;
+    eq(ids.length, 12);
+  });
   await step('web API lists jobs with snippets and patches a job', async () => {
     const j = await (await web('/api/jobs')).json();
     ok(j.jobs.length >= 10, 'got ' + j.jobs.length);
@@ -438,6 +499,34 @@ async function browserTests(cookie, appId) {
     await page.click('button:has-text("Sign in")');
     await page.waitForURL(`${BASE}/`);
   });
+  await step('the Jobs page opens on the latest search and lists past searches', async () => {
+    await page.waitForSelector('.scope b');
+    ok((await page.locator('.past-item').count()) >= 4, 'All jobs plus the searches');
+    eq(await page.locator('.past-item[aria-current=true]').count(), 1);
+    ok(/ml engineer/i.test(await page.locator('.scope').innerText()), 'banner should name the search: ' + (await page.locator('.scope').innerText()));
+    ok((await page.locator('.scope').innerText()).includes('Entry level'), 'banner should show the level');
+    await shot('02a-scope');
+  });
+  await step('picking a past search shows only its listings; All jobs shows everything', async () => {
+    const allCount = async () => Number(await page.locator('.tabs button:has-text("All") .n').innerText());
+    await page.locator('.past-item', { hasText: 'All jobs' }).click();
+    await page.waitForFunction(() => !document.querySelector('.scope'));
+    const everything = await allCount();
+    await page.locator('.past-item', { hasText: /^machine learning engineer/ }).first().click();
+    await page.waitForSelector('.scope b');
+    const one = await allCount();
+    ok(one > 0 && one < everything, `search ${one} vs all ${everything}`);
+    await page.locator('.scope .btn', { hasText: 'Show all jobs' }).click();
+    await page.waitForFunction(() => !document.querySelector('.scope'));
+    eq(await allCount(), everything);
+    await page.locator('.past-item', { hasText: /^ml engineer/ }).first().click();
+    await page.waitForSelector('.scope b');
+    ok((await page.locator('.past-item', { hasText: 'anything' }).count()) === 1, 'the empty failed search is listed too');
+    await page.locator('.past-item', { hasText: 'anything' }).click();
+    await page.waitForSelector('text=This search returned no listings');
+    await page.locator('.past-item', { hasText: /^ml engineer/ }).first().click();
+    await page.waitForSelector('.row-job');
+  });
   await step('the workbench lists jobs, with the first selected and detail shown', async () => {
     await page.waitForSelector('.row-job');
     ok((await page.locator('.row-job').count()) > 5);
@@ -483,10 +572,32 @@ async function browserTests(cookie, appId) {
   await step('searching from the page shows progress, then new rows', async () => {
     await page.fill('#kw', 'nlp engineer'); await page.press('#kw', 'Enter');
     await page.fill('#loc', 'Hyderabad'); await page.press('#loc', 'Enter');
+    await page.click('.chip:has-text("Entry level")');
     await page.click('button:has-text("Search")');
     await page.waitForSelector('.runs li');
     await shot('05-searching');
     await page.waitForSelector('.runs .st.done', { timeout: 30000 });
+    await page.waitForFunction(() => document.querySelector('.scope b')?.textContent === 'nlp engineer', null, { timeout: 15000 });
+    const log = await (await fetch('http://localhost:4010/__log')).json();
+    const li = log.filter((l) => l.actor === 'curious_coder/linkedin-jobs-scraper').at(-1);
+    eq(new URL(li.input.urls[0]).searchParams.get('f_E'), '2', 'entry chip should send f_E=2');
+    ok((await page.locator('.past-item').first().innerText()).includes('nlp engineer') === false, 'All jobs is first');
+    await shot('05b-new-search-scope');
+  });
+  await step('the years filter narrows the list and rows show what each posting asks', async () => {
+    await page.locator('.past-item', { hasText: 'All jobs' }).click();
+    await page.waitForFunction(() => !document.querySelector('.scope'));
+    await page.click('.tabs button:has-text("All")');
+    const before = await page.locator('.row-job').count();
+    await page.click('.chip:has-text("Entry 0–2")');
+    const after = await page.locator('.row-job').count();
+    ok(after > 0 && after < before, `years filter ${before} -> ${after}`);
+    await page.uncheck('text=Keep postings that don');
+    const rows = await page.locator('.row-job .rj-sub').allInnerTexts();
+    ok(rows.length > 0 && rows.every((t) => /yrs|No experience/.test(t)), 'every row should state years: ' + JSON.stringify(rows.slice(0, 3)));
+    ok(!rows.some((t) => t.includes('5+ yrs')), 'no 5+ postings');
+    await shot('05c-years');
+    await page.click('button:has-text("Clear filters")');
   });
   await step('the applications board shows the draft and drag changes status', async () => {
     await page.goto(`${BASE}/applications`);

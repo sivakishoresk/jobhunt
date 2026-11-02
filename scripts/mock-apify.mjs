@@ -10,6 +10,8 @@ const TITLES = ['Machine Learning Engineer', 'Senior ML Engineer', 'Applied Scie
 const COMPANIES = ['Acme AI', 'Northwind', 'Globex', 'Initech', 'Umbrella Labs', 'Hooli', 'Stark Data', 'Wayne Analytics', 'Pied Piper', 'Soylent', 'Cyberdyne', 'Wonka Systems'];
 const CITIES = ['Bengaluru, Karnataka, India', 'Mumbai, Maharashtra, India', 'Remote', 'Hyderabad, Telangana, India'];
 
+const YEARS = ['You have 5+ years of experience.', 'Requires 2-4 years of relevant experience.', 'At least 1 year of experience.', 'Great team, flexible hours.'];
+
 const runs = new Map();
 const log = [];
 let seq = 0;
@@ -25,8 +27,8 @@ function items(actor, input) {
       out.push({
         id, link: `https://www.linkedin.com/jobs/view/${id}`, title: TITLES[i], companyName: COMPANIES[i], location: CITIES[i % 4],
         salaryInfo: i % 3 === 0 ? ['₹30,00,000', '₹45,00,000'] : [], postedAt: ymd(day(i)),
-        descriptionHtml: `<p>We are hiring a <b>${TITLES[i]}</b> at ${COMPANIES[i]}.</p><ul><li>Python and PyTorch</li><li>Own models end to end</li></ul><p>You have 5+ years of experience.</p>`,
-        descriptionText: `We are hiring a ${TITLES[i]} at ${COMPANIES[i]}.\n- Python and PyTorch\n- Own models end to end\nYou have 5+ years of experience. We offer 20% bonus.`,
+        descriptionHtml: `<p>We are hiring a <b>${TITLES[i]}</b> at ${COMPANIES[i]}.</p><ul><li>Python and PyTorch</li><li>Own models end to end</li></ul><p>${YEARS[i % 4]}</p>`,
+        descriptionText: `We are hiring a ${TITLES[i]} at ${COMPANIES[i]}.\n- Python and PyTorch\n- Own models end to end\n${YEARS[i % 4]} We offer 20% bonus.`,
         seniorityLevel: 'Mid-Senior level', employmentType: 'Full-time', applyUrl: '',
       });
     }

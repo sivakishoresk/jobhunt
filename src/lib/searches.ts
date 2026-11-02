@@ -29,6 +29,8 @@ export interface SearchView {
   runs: RunView[];
   found: number;
   added: number;
+  /** Distinct jobs this search returned, new or already known. */
+  jobs: number;
 }
 
 function mapRun(r: Row): RunView {
@@ -157,6 +159,7 @@ export async function advanceSearch(searchId: string): Promise<SearchView> {
     await q(`UPDATE searches SET status = $2, finished_at = COALESCE(finished_at, now()) WHERE id = $1`, [searchId, status]);
   }
   const views = runs.map(mapRun);
+  const linked = await q('SELECT count(*)::int AS n FROM search_jobs WHERE search_id = $1', [searchId]);
   return {
     id: searchId,
     query,
@@ -165,26 +168,36 @@ export async function advanceSearch(searchId: string): Promise<SearchView> {
     runs: views,
     found: views.reduce((a, r) => a + r.found, 0),
     added: views.reduce((a, r) => a + r.added, 0),
+    jobs: linked[0]?.n ?? 0,
   };
 }
 
-export async function listSearches(limit = 20): Promise<SearchView[]> {
-  const rows = await q('SELECT id FROM searches ORDER BY created_at DESC LIMIT $1', [limit]);
-  const out: SearchView[] = [];
-  for (const r of rows) {
-    const s = await q('SELECT * FROM searches WHERE id = $1', [r.id]);
-    const runs = (await q('SELECT * FROM search_runs WHERE search_id = $1 ORDER BY started_at', [r.id])).map(mapRun);
-    out.push({
+export async function listSearches(limit = 30): Promise<SearchView[]> {
+  const searches = await q('SELECT * FROM searches ORDER BY created_at DESC LIMIT $1', [limit]);
+  if (!searches.length) return [];
+  const ids = searches.map((x) => x.id);
+  const runRows = await q('SELECT * FROM search_runs WHERE search_id = ANY($1::text[]) ORDER BY started_at', [ids]);
+  const counts = await q('SELECT search_id, count(*)::int AS n FROM search_jobs WHERE search_id = ANY($1::text[]) GROUP BY search_id', [ids]);
+  const nJobs = new Map(counts.map((c) => [c.search_id as string, c.n as number]));
+  return searches.map((r) => {
+    const runs = runRows.filter((x) => x.search_id === r.id).map(mapRun);
+    return {
       id: r.id,
-      query: s[0].query,
-      status: s[0].status,
-      created_at: iso(s[0].created_at),
+      query: r.query,
+      status: r.status,
+      created_at: iso(r.created_at),
       runs,
       found: runs.reduce((a, x) => a + x.found, 0),
       added: runs.reduce((a, x) => a + x.added, 0),
-    });
-  }
-  return out;
+      jobs: nJobs.get(r.id) ?? 0,
+    };
+  });
+}
+
+/** Ids of every job a search returned, for scoping the Jobs page. */
+export async function jobIdsForSearch(searchId: string): Promise<string[]> {
+  const rows = await q('SELECT job_id FROM search_jobs WHERE search_id = $1', [searchId]);
+  return rows.map((r) => r.job_id as string);
 }
 
 export async function jobsForSearch(searchId: string, limit = 50) {

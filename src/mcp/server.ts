@@ -1,7 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { getProfile, saveProfile, claudeView, profileIsEmpty, ProfilePatchSchema } from '@/lib/profile';
-import { startSearch, advanceSearch, jobsForSearch, type SearchView } from '@/lib/searches';
+import { startSearch, advanceSearch, jobsForSearch, listSearches, type SearchView } from '@/lib/searches';
+import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
+import { termsText } from '@/lib/terms';
 import { listJobs, getJob, addManualJob, saveScores, setJobState, JOB_STATES, type JobSummary } from '@/lib/jobs';
 import { buildDraft, DraftInputSchema } from '@/lib/drafts';
 import {
@@ -15,7 +17,7 @@ import { sleep, errMessage } from '@/lib/util';
 
 const INSTRUCTIONS = `Jobhunt is the user's personal job-search workbench. Jobs come from Apify scrapers (LinkedIn, Y Combinator) and are stored in the user's own database.
 
-Typical flow: get_profile (check it is filled in) -> search_jobs -> score_jobs for the ones worth ranking -> save_application for the one(s) the user picks. Use list_jobs to see jobs already found before searching again, because every search starts paid Apify runs.
+Typical flow: get_profile (check it is filled in) -> search_jobs -> score_jobs for the ones worth ranking -> save_application for the one(s) the user picks. Use list_jobs (and list_searches) to see jobs already found before searching again, because every search starts paid Apify runs and a repeated result is still billed. Prefer a short posted_within_days window.
 
 Rules: never invent experience, employers, numbers, degrees or skills. Resumes and cover letters may only use facts from get_profile, and anything the posting asks for that the profile lacks goes in "gaps". Nothing is ever sent or deleted for the user; drafts wait in the app for review.
 
@@ -40,6 +42,7 @@ function brief(j: JobSummary) {
     salary: j.salary ?? undefined,
     state: j.state,
     score: j.score ?? undefined,
+    years_asked: yearsLabel(j.min_years, j.max_years) ?? undefined,
     description: j.desc_len > 400 ? 'full' : j.desc_len > 0 ? 'short' : 'none',
   };
 }
@@ -124,6 +127,10 @@ export function createMcpServer(base: string): McpServer {
         location: z.array(z.string()).max(5).optional().describe('One or more cities or countries. Defaults to the profile location.'),
         remote_only: z.boolean().optional(),
         posted_within_days: z.number().int().min(1).max(60).optional(),
+        experience_levels: z
+          .array(z.enum(LINKEDIN_LEVELS.map((l) => l.key) as [string, ...string[]]))
+          .optional()
+          .describe('LinkedIn experience levels to keep, applied by LinkedIn before results are billed. Omit for any level.'),
         sources: z.array(z.string()).optional().describe('Source ids to use, e.g. ["linkedin"]. Defaults to all enabled sources.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -136,6 +143,7 @@ export function createMcpServer(base: string): McpServer {
           location: a.location?.length ? a.location : [profile.basics.location ?? ''],
           remote: !!a.remote_only,
           days: a.posted_within_days ?? null,
+          experience: (a.experience_levels ?? []).map((k) => LINKEDIN_LEVELS.find((l) => l.key === k)!.code),
           sources: a.sources,
         });
         const deadline = Date.now() + 40_000;
@@ -144,6 +152,37 @@ export function createMcpServer(base: string): McpServer {
           sv = await advanceSearch(sv.id);
         }
         return ok(await searchReport(sv));
+      } catch (e) {
+        return fail(errMessage(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_searches',
+    {
+      title: 'List past searches',
+      description:
+        'Lists previous searches, newest first, with what was searched, when, and how many jobs each returned. Use a search_id with list_jobs to see just that search\'s listings.',
+      inputSchema: { limit: z.number().int().min(1).max(50).optional() },
+      annotations: readOnly,
+    },
+    async ({ limit }) => {
+      try {
+        const rows = await listSearches(limit ?? 15);
+        return ok({
+          searches: rows.map((s) => ({
+            search_id: s.id,
+            when: s.created_at,
+            keywords: termsText(s.query.keywords),
+            location: termsText(s.query.location) || undefined,
+            posted_within_days: s.query.days ?? undefined,
+            experience_levels: s.query.experience?.length ? s.query.experience.map((c) => LINKEDIN_LEVELS.find((l) => l.code === c)?.label ?? c) : undefined,
+            status: s.status,
+            jobs: s.jobs,
+            new_jobs: s.added,
+          })),
+        });
       } catch (e) {
         return fail(errMessage(e));
       }
@@ -182,6 +221,10 @@ export function createMcpServer(base: string): McpServer {
         unscored_only: z.boolean().optional(),
         remote_only: z.boolean().optional(),
         posted_within_days: z.number().int().min(1).max(365).optional(),
+        search_id: z.string().optional().describe('Only jobs returned by this search (see list_searches)'),
+        years_min: z.number().int().min(0).max(40).optional().describe('Postings that ask for at least this many years of experience'),
+        years_max: z.number().int().min(0).max(40).optional().describe('Postings that ask for at most this many years of experience'),
+        include_unstated_years: z.boolean().optional().describe('With years_min/years_max: also include postings that state no number. Default true.'),
         sort: z.enum(['newest', 'score', 'company']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
@@ -198,6 +241,10 @@ export function createMcpServer(base: string): McpServer {
           unscored: a.unscored_only,
           remote: a.remote_only,
           postedWithinDays: a.posted_within_days,
+          searchId: a.search_id,
+          yearsMin: a.years_min,
+          yearsMax: a.years_max,
+          yearsUnstated: a.include_unstated_years,
           sort: a.sort ?? 'newest',
           limit: a.limit ?? 30,
           offset: a.offset ?? 0,

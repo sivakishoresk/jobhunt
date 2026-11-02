@@ -10,11 +10,12 @@ const Body = z.object({
   location: z.array(z.string().trim()).max(5).default([]),
   remote: z.boolean().default(false),
   days: z.number().int().min(1).max(60).nullable().default(null),
+  experience: z.array(z.number().int().min(1).max(6)).max(6).default([]),
   sources: z.array(z.string()).optional(),
 });
 
 export async function GET(req: Request) {
-  return withUser(req, async () => Response.json({ searches: await listSearches(15) }));
+  return withUser(req, async () => Response.json({ searches: await listSearches(30) }));
 }
 
 export async function POST(req: Request) {

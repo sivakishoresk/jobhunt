@@ -4,11 +4,20 @@ import Link from 'next/link';
 import type { JobSummary, JobFull, JobState } from '@/lib/jobs';
 import type { SearchView } from '@/lib/searches';
 import { Highlight, Meter, TagInput, api, timeAgo, tokens, useToast } from './bits';
+import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
+import { termsText } from '@/lib/terms';
 
 type Tab = 'inbox' | 'saved' | 'applied' | 'dismissed' | 'all';
 type Sort = 'newest' | 'score' | 'company';
 const TAB_STATE: Record<Exclude<Tab, 'all'>, JobState> = { inbox: 'new', saved: 'saved', applied: 'applied', dismissed: 'dismissed' };
 const TAB_LABEL: Record<Tab, string> = { inbox: 'Inbox', saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed', all: 'All' };
+
+function levelText(codes?: number[]): string {
+  return (codes ?? []).map((c) => LINKEDIN_LEVELS.find((l) => l.code === c)?.label ?? '').filter(Boolean).join('/');
+}
+function searchTitle(sx: SearchView): string {
+  return `${termsText(sx.query.keywords)}${termsText(sx.query.location) ? ' in ' + termsText(sx.query.location) : ''}`;
+}
 
 const claudeLink = (prompt: string) => `https://claude.ai/new?q=${encodeURIComponent(prompt)}`;
 
@@ -41,6 +50,15 @@ export function Workbench() {
   const [remoteOnly, setRemoteOnly] = useState(false);
   const [salaryOnly, setSalaryOnly] = useState(false);
   const [unscored, setUnscored] = useState(false);
+  const [yrsFrom, setYrsFrom] = useState('');
+  const [yrsTo, setYrsTo] = useState('');
+  const [yrsUnstated, setYrsUnstated] = useState(true);
+  const [pastSearches, setPastSearches] = useState<SearchView[]>([]);
+  const [scopeId, setScopeId] = useState<string>('all');
+  const [scopeIds, setScopeIds] = useState<Set<string> | null>(null);
+  const [newOnly, setNewOnly] = useState(false);
+  const [scopeReady, setScopeReady] = useState(false);
+  const [levels, setLevels] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<Sort>('newest');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<JobFull | null>(null);
@@ -78,8 +96,42 @@ export function Workbench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadSearches = useCallback(async (): Promise<SearchView[]> => {
+    try {
+      const r = await api<{ searches: SearchView[] }>('/api/searches');
+      setPastSearches(r.searches);
+      return r.searches;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const selectScope = useCallback(async (id: string) => {
+    setScopeId(id);
+    setNewOnly(false);
+    ls('jh.scope', id);
+    if (id === 'all') {
+      setScopeIds(null);
+      return;
+    }
+    try {
+      const r = await api<{ ids: string[] }>(`/api/searches/${id}/jobs`);
+      setScopeIds(new Set(r.ids));
+    } catch {
+      setScopeIds(new Set());
+    }
+  }, []);
+
   useEffect(() => {
     loadJobs();
+    loadSearches().then((list) => {
+      const stored = ls('jh.scope');
+      const want = stored === 'all' ? 'all' : list.find((x) => x.id === stored)?.id ?? list.find((x) => x.jobs > 0)?.id ?? 'all';
+      selectScope(want).finally(() => setScopeReady(true));
+    });
+    try {
+      setLevels(new Set(JSON.parse(ls('jh.levels') || '[]')));
+    } catch {}
     setKw(lsList('jh.kw2'));
     setLoc(lsList('jh.loc2'));
     api<{ sources: any[]; apifyTokenSet: boolean }>('/api/sources')
@@ -95,7 +147,7 @@ export function Workbench() {
         setTitleIdeas(p.jobTitles ?? []);
       })
       .catch(() => {});
-  }, [loadJobs]);
+  }, [loadJobs, loadSearches, selectScope]);
 
   // ---------- searching ----------
   async function runSearch(e?: React.FormEvent) {
@@ -108,13 +160,15 @@ export function Workbench() {
     setStarting(true);
     ls('jh.kw2', JSON.stringify(kw));
     ls('jh.loc2', JSON.stringify(loc));
+    ls('jh.levels', JSON.stringify([...levels]));
     lastKeywords.current = kw.join(' ');
     try {
       const sv = await api<SearchView>('/api/searches', {
         method: 'POST',
-        json: { keywords: kw, location: loc, remote, days: days || null, sources: [...pickedSources] },
+        json: { keywords: kw, location: loc, remote, days: days || null, experience: [...levels].sort(), sources: [...pickedSources] },
       });
       setSearch(sv);
+      loadSearches();
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'Search failed.');
     } finally {
@@ -130,6 +184,8 @@ export function Workbench() {
         setSearch(sv);
         if (sv.status !== 'running') {
           await loadJobs();
+          await loadSearches();
+          await selectScope(sv.id);
           show(sv.added ? `${sv.added} new job${sv.added === 1 ? '' : 's'} from ${sv.found} found.` : `Search finished. ${sv.found} found, none new.`);
         }
       } catch {
@@ -145,10 +201,16 @@ export function Workbench() {
   }, [search?.id, search?.status]);
 
   // ---------- derived list ----------
+  const scopeSearch = useMemo(() => pastSearches.find((x) => x.id === scopeId) ?? null, [pastSearches, scopeId]);
+  const scoped = useMemo(() => {
+    if (!scopeIds) return jobs;
+    const since = newOnly ? scopeSearch?.created_at ?? null : null;
+    return jobs.filter((j) => scopeIds.has(j.id) && (!since || (j.first_seen != null && j.first_seen >= since)));
+  }, [jobs, scopeIds, newOnly, scopeSearch]);
   const terms = useMemo(() => [...new Set([...tokens(text), ...tokens(lastKeywords.current)])], [text, search]);
   const tabCounts = useMemo(() => {
     const c: Record<Tab, number> = { inbox: 0, saved: 0, applied: 0, dismissed: 0, all: 0 };
-    for (const j of jobs) {
+    for (const j of scoped) {
       c.all++;
       if (j.state === 'new') c.inbox++;
       else if (j.state === 'saved') c.saved++;
@@ -156,13 +218,20 @@ export function Workbench() {
       else c.dismissed++;
     }
     return c;
-  }, [jobs]);
+  }, [scoped]);
   const sourceIds = useMemo(() => [...new Set(jobs.map((j) => j.source))], [jobs]);
 
   const visible = useMemo(() => {
     const t = tokens(text);
     const cutoff = within ? Date.now() - within * 86400e3 : 0;
-    const out = jobs.filter((j) => {
+    const lo = yrsFrom === '' ? null : Number(yrsFrom);
+    const hi = yrsTo === '' ? null : Number(yrsTo);
+    const out = scoped.filter((j) => {
+      if (lo != null || hi != null) {
+        if (j.min_years == null) {
+          if (!yrsUnstated) return false;
+        } else if ((lo != null && j.min_years < lo) || (hi != null && j.min_years > hi)) return false;
+      }
       if (tab !== 'all' && j.state !== TAB_STATE[tab]) return false;
       if (tab === 'all' && j.state === 'dismissed') return false;
       if (srcFilter.size && !srcFilter.has(j.source)) return false;
@@ -186,9 +255,9 @@ export function Workbench() {
           : when(b) - when(a),
     );
     return out;
-  }, [jobs, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, sort]);
+  }, [scoped, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, yrsFrom, yrsTo, yrsUnstated, sort]);
 
-  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored);
+  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored || yrsFrom !== '' || yrsTo !== '');
   function resetFilters() {
     setText('');
     setSrcFilter(new Set());
@@ -197,6 +266,9 @@ export function Workbench() {
     setRemoteOnly(false);
     setSalaryOnly(false);
     setUnscored(false);
+    setYrsFrom('');
+    setYrsTo('');
+    setYrsUnstated(true);
   }
 
   // keep a valid selection
@@ -359,6 +431,29 @@ export function Workbench() {
             <option value={30}>Last 30 days</option>
             <option value={0}>Any time</option>
           </select>
+          <label className="field">Experience level</label>
+          <div className="row" role="group" aria-label="LinkedIn experience level">
+            {LINKEDIN_LEVELS.map((l) => (
+              <button
+                type="button"
+                key={l.code}
+                className="chip"
+                aria-pressed={levels.has(l.code)}
+                onClick={() =>
+                  setLevels((p) => {
+                    const n = new Set(p);
+                    n.has(l.code) ? n.delete(l.code) : n.add(l.code);
+                    return n;
+                  })
+                }
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
+          <p className="hint" style={{ margin: '0.3rem 0 0' }}>
+            LinkedIn only. It narrows the search before you are billed. None selected means any level.
+          </p>
           <label className="check">
             <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} /> Remote only
           </label>
@@ -417,6 +512,32 @@ export function Workbench() {
           </ul>
         )}
 
+        <h2>Past searches</h2>
+        <ul className="past" aria-label="Past searches">
+          <li>
+            <button className="past-item" aria-current={scopeId === 'all'} onClick={() => selectScope('all')}>
+              <span className="pi-main">All jobs</span>
+              <span className="pi-side">{jobs.length}</span>
+            </button>
+          </li>
+          {pastSearches.map((sx) => (
+            <li key={sx.id}>
+              <button className="past-item" aria-current={scopeId === sx.id} onClick={() => selectScope(sx.id)} title={searchTitle(sx)}>
+                <span className="pi-main">{termsText(sx.query.keywords)}</span>
+                <span className="pi-sub">
+                  {[termsText(sx.query.location), sx.query.days ? `last ${sx.query.days === 1 ? '24h' : sx.query.days + 'd'}` : '', levelText(sx.query.experience)].filter(Boolean).join(' · ')}
+                  {' · '}
+                  {timeAgo(sx.created_at)} ago
+                </span>
+                <span className="pi-side">
+                  {sx.status === 'running' ? 'running…' : sx.status === 'failed' ? 'failed' : `${sx.jobs}${sx.added ? ` · ${sx.added} new` : ''}`}
+                </span>
+              </button>
+            </li>
+          ))}
+          {!pastSearches.length && <li className="hint">Searches you run appear here, each with its own listings.</li>}
+        </ul>
+
         <h2>Filters</h2>
         <label className="field" htmlFor="minscore" style={{ marginTop: 0 }}>
           Fit score
@@ -437,6 +558,38 @@ export function Workbench() {
           <option value={7}>Last 7 days</option>
           <option value={30}>Last 30 days</option>
         </select>
+        <label className="field">Years of experience asked</label>
+        <div className="yrs">
+          <input type="number" min={0} max={40} inputMode="numeric" aria-label="From years" placeholder="from" value={yrsFrom} onChange={(e) => setYrsFrom(e.target.value)} />
+          <span aria-hidden>to</span>
+          <input type="number" min={0} max={40} inputMode="numeric" aria-label="To years" placeholder="to" value={yrsTo} onChange={(e) => setYrsTo(e.target.value)} />
+        </div>
+        <div className="row" style={{ marginTop: '0.4rem' }}>
+          {[
+            ['Entry 0–2', '0', '2'],
+            ['Mid 3–5', '3', '5'],
+            ['Senior 6+', '6', ''],
+          ].map(([label, a, b]) => (
+            <button
+              key={label}
+              type="button"
+              className="chip"
+              aria-pressed={yrsFrom === a && yrsTo === b}
+              onClick={() => {
+                const on = yrsFrom === a && yrsTo === b;
+                setYrsFrom(on ? '' : a);
+                setYrsTo(on ? '' : b);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {(yrsFrom !== '' || yrsTo !== '') && (
+          <label className="check" style={{ marginTop: '0.4rem' }}>
+            <input type="checkbox" checked={yrsUnstated} onChange={(e) => setYrsUnstated(e.target.checked)} /> Keep postings that don&apos;t say
+          </label>
+        )}
         {sourceIds.length > 1 && (
           <>
             <label className="field">Source</label>
@@ -486,6 +639,33 @@ export function Workbench() {
       {/* ---------- list ---------- */}
       <section className="listpane" aria-label="Jobs">
         <div className="listhead">
+          {scopeSearch ? (
+            <div className="scope" role="status">
+              <div>
+                <b>{termsText(scopeSearch.query.keywords)}</b>
+                <span className="hint">
+                  {' '}
+                  {[termsText(scopeSearch.query.location), scopeSearch.query.days ? `last ${scopeSearch.query.days === 1 ? '24 hours' : scopeSearch.query.days + ' days'}` : '', levelText(scopeSearch.query.experience)].filter(Boolean).join(' · ')}
+                  {' · '}
+                  {new Date(scopeSearch.created_at ?? Date.now()).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
+                  {' · '}
+                  {scopeSearch.jobs} listings{scopeSearch.added ? `, ${scopeSearch.added} new` : ''}
+                </span>
+              </div>
+              <div className="scope-actions">
+                {scopeSearch.added > 0 && (
+                  <label className="check">
+                    <input type="checkbox" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} /> Only new
+                  </label>
+                )}
+                <button className="btn small" onClick={() => selectScope('all')}>
+                  Show all jobs
+                </button>
+              </div>
+            </div>
+          ) : (
+            scopeId !== 'all' && <div className="scope hint">Loading search…</div>
+          )}
           <div className="filterbar">
             <input
               ref={filterRef}
@@ -514,7 +694,7 @@ export function Workbench() {
           </div>
         </div>
         <div className="list" role="listbox" aria-label="Job results">
-          {!loaded ? (
+          {!loaded || !scopeReady ? (
             <div className="empty">Loading…</div>
           ) : visible.length === 0 ? (
             <div className="empty">
@@ -522,6 +702,20 @@ export function Workbench() {
                 <>
                   <h3>No jobs yet</h3>
                   <p>Run a search on the left, or ask Claude: “Find machine learning engineer jobs in Bangalore from the last week.”</p>
+                </>
+              ) : scopeSearch && scopeSearch.jobs === 0 ? (
+                <>
+                  <h3>This search returned no listings</h3>
+                  <p>
+                    {scopeSearch.status === 'running'
+                      ? 'It is still running. Results appear here when it finishes.'
+                      : scopeSearch.status === 'failed' || scopeSearch.status === 'partial'
+                        ? 'One or more sources failed. Check Settings → Sources and use Test to see why.'
+                        : 'Try a wider posted window, fewer filters, or a different role.'}{' '}
+                    <button className="btn small" onClick={() => selectScope('all')}>
+                      Show all jobs
+                    </button>
+                  </p>
                 </>
               ) : (
                 <>
@@ -561,6 +755,7 @@ export function Workbench() {
                     <Highlight text={j.location} terms={terms} />
                     {j.remote && !/remote/i.test(j.location) ? ' · Remote' : ''}
                     {j.salary ? ` · ${j.salary}` : ''}
+                    {yearsLabel(j.min_years, j.max_years) ? ` · ${yearsLabel(j.min_years, j.max_years)}` : ''}
                   </span>
                 </span>
                 <span className="rj-side">
@@ -592,6 +787,9 @@ export function Workbench() {
             <div className="facts">
               {selected.posted_at && <span>Posted {timeAgo(selected.posted_at)} ago</span>}
               {selected.salary && <span>{selected.salary}</span>}
+              {yearsLabel(selected.min_years, selected.max_years) && (
+                <span title="Read from the posting text. Where several are listed, the highest is shown.">Asks {yearsLabel(selected.min_years, selected.max_years)}</span>
+              )}
               {selected.employment_type && <span>{selected.employment_type}</span>}
               {selected.seniority && <span>{selected.seniority}</span>}
               {selected.remote && <span>Remote</span>}

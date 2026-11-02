@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { extractYears } from './experience';
 
 export interface NormJob {
   dedupe_key: string;
@@ -16,6 +17,8 @@ export interface NormJob {
   employment_type: string | null;
   seniority: string | null;
   tags: string[];
+  min_years: number | null;
+  max_years: number | null;
 }
 
 const norm = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -154,6 +157,7 @@ export function normalizeItem(source: string, rawObj: Record<string, unknown>, n
     ? `${source}:${external}`
     : `${source}:h:${createHash('sha1').update([title, company, location].join('|').toLowerCase()).digest('hex').slice(0, 16)}`;
 
+  const years = extractYears(description);
   return {
     dedupe_key,
     source,
@@ -170,6 +174,8 @@ export function normalizeItem(source: string, rawObj: Record<string, unknown>, n
     employment_type: r.str('employmentType', 'employment_type', 'jobType', 'job_type') || null,
     seniority: r.str('seniorityLevel', 'seniority_level', 'seniority', 'experienceLevel') || null,
     tags,
+    min_years: years.min,
+    max_years: years.max,
   };
 }
 

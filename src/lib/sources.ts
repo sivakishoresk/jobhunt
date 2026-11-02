@@ -7,6 +7,8 @@ export interface RunQuery {
   location: string;
   remote: boolean;
   days: number | null;
+  /** LinkedIn experience level codes 1-6 (1 internship … 6 executive). Empty or missing means any. */
+  experience?: number[];
 }
 
 /** What the user asks for: any number of roles and places. Older saved searches hold plain strings. */
@@ -15,6 +17,7 @@ export interface SearchQuery {
   location: string | string[];
   remote: boolean;
   days: number | null;
+  experience?: number[];
   sources?: string[];
 }
 
@@ -33,7 +36,7 @@ export function runQueries(q: SearchQuery): RunQuery[] {
   const roles = asList(q.keywords);
   const places = asList(q.location);
   return roles.flatMap((keywords) =>
-    (places.length ? places : ['']).map((location) => ({ keywords, location, remote: q.remote, days: q.days })),
+    (places.length ? places : ['']).map((location) => ({ keywords, location, remote: q.remote, days: q.days, experience: q.experience })),
   );
 }
 
@@ -135,6 +138,8 @@ export function linkedinSearchUrl(q: RunQuery): string {
   if (q.location) p.set('location', q.location);
   if (q.days) p.set('f_TPR', `r${Math.round(q.days * 86400)}`);
   if (q.remote) p.set('f_WT', '2');
+  const levels = [...new Set((q.experience ?? []).filter((n) => Number.isInteger(n) && n >= 1 && n <= 6))].sort();
+  if (levels.length) p.set('f_E', levels.join(','));
   p.set('sortBy', 'DD');
   p.set('position', '1');
   p.set('pageNum', '0');

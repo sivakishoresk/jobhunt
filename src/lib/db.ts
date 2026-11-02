@@ -1,4 +1,5 @@
 import { env } from './env';
+import { extractYears } from './experience';
 
 export type Row = Record<string, any>;
 export interface Db {
@@ -60,6 +61,8 @@ const SCHEMA: string[] = [
      last_seen timestamptz NOT NULL DEFAULT now(),
      notes text NOT NULL DEFAULT ''
    )`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS min_years int`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS max_years int`,
   `CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs(state)`,
   `CREATE INDEX IF NOT EXISTS jobs_first_seen_idx ON jobs(first_seen DESC)`,
   `CREATE TABLE IF NOT EXISTS search_jobs (
@@ -67,6 +70,7 @@ const SCHEMA: string[] = [
      job_id text NOT NULL,
      PRIMARY KEY (search_id, job_id)
    )`,
+  `CREATE INDEX IF NOT EXISTS search_jobs_job_idx ON search_jobs(job_id)`,
   `CREATE TABLE IF NOT EXISTS applications (
      id text PRIMARY KEY,
      job_id text REFERENCES jobs(id) ON DELETE SET NULL,
@@ -111,6 +115,30 @@ async function open(): Promise<Db> {
   return { query: async (text, params = []) => (await pg.query(text, params as any[])).rows as Row[] };
 }
 
+/** One-time: read years of experience out of jobs saved before that column existed. */
+async function backfillYears(d: Db): Promise<void> {
+  if ((await d.query(`SELECT 1 FROM kv WHERE key = 'years_backfill_v1'`)).length) return;
+  let after = '';
+  for (;;) {
+    const rows = await d.query(`SELECT id, description FROM jobs WHERE id > $1 ORDER BY id LIMIT 200`, [after]);
+    if (!rows.length) break;
+    after = rows[rows.length - 1].id;
+    const found = rows
+      .map((r) => ({ id: r.id as string, ...extractYears(r.description as string) }))
+      .filter((r) => r.min != null)
+      .map((r) => ({ id: r.id, min: r.min, max: r.max }));
+    if (found.length) {
+      await d.query(
+        `UPDATE jobs SET min_years = x.min, max_years = x.max
+         FROM jsonb_to_recordset($1::jsonb) AS x(id text, min int, max int)
+         WHERE jobs.id = x.id AND jobs.min_years IS NULL`,
+        [JSON.stringify(found)],
+      );
+    }
+  }
+  await d.query(`INSERT INTO kv (key, value) VALUES ('years_backfill_v1', 'true'::jsonb) ON CONFLICT (key) DO NOTHING`);
+}
+
 const g = globalThis as unknown as { __jhDb?: Promise<Db> };
 
 export function db(): Promise<Db> {
@@ -118,6 +146,7 @@ export function db(): Promise<Db> {
     g.__jhDb = (async () => {
       const d = await open();
       for (const stmt of SCHEMA) await d.query(stmt);
+      await backfillYears(d).catch(() => {}); // best effort; the app works without it
       return d;
     })().catch((e) => {
       g.__jhDb = undefined;
