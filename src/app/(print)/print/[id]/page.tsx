@@ -2,13 +2,15 @@ import { notFound } from 'next/navigation';
 import { getApplication } from '@/lib/applications';
 import { LetterSheet, ResumeSheet, letterDate } from '@/components/sheets';
 import { PrintBar } from '@/components/PrintBar';
+import { getSession } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
 export default async function PrintPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ doc?: string; auto?: string }> }) {
   const { id } = await params;
   const sp = await searchParams;
-  const app = await getApplication(id);
+  const me = await getSession();
+  const app = me ? await getApplication(me.uid, id) : null;
   if (!app) notFound();
   const cover = sp.doc === 'cover';
   return (

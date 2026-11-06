@@ -1,7 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
 export function newId(prefix: string): string {
-  return `${prefix}_${randomBytes(4).toString('hex')}`;
+  return `${prefix}_${randomBytes(8).toString('hex')}`;
 }
 
 export function sha256hex(s: string): string {
@@ -18,6 +18,15 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
+}
+
+/** An error with an HTTP status the API should answer with. */
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
 }
 
 export function errMessage(e: unknown): string {

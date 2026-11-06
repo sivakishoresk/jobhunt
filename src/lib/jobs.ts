@@ -82,13 +82,14 @@ export interface JobFilters {
   offset?: number;
 }
 
-export async function listJobs(f: JobFilters = {}): Promise<{ jobs: JobSummary[]; total: number }> {
+export async function listJobs(uid: string, f: JobFilters = {}): Promise<{ jobs: JobSummary[]; total: number }> {
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (sql: string, v: unknown) => {
     params.push(v);
     where.push(sql.replace('?', `$${params.length}`));
   };
+  add('user_id = ?', uid);
   if (f.state && f.state !== 'all') {
     if (f.state === 'active') where.push(`state <> 'dismissed'`);
     else add('state = ?', f.state);
@@ -148,11 +149,11 @@ export interface JobFull extends JobSummary {
   applications: { id: string; status: string }[];
 }
 
-export async function getJob(id: string): Promise<JobFull | null> {
-  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, notes FROM jobs WHERE id = $1`, [id]);
+export async function getJob(uid: string, id: string): Promise<JobFull | null> {
+  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, notes FROM jobs WHERE id = $1 AND user_id = $2`, [id, uid]);
   if (!rows.length) return null;
   const r = rows[0];
-  const apps = await q('SELECT id, status FROM applications WHERE job_id = $1 ORDER BY created_at DESC', [id]);
+  const apps = await q('SELECT id, status FROM applications WHERE job_id = $1 AND user_id = $2 ORDER BY created_at DESC', [id, uid]);
   return {
     ...mapSummary(r),
     description: r.description ?? '',
@@ -164,17 +165,17 @@ export async function getJob(id: string): Promise<JobFull | null> {
   };
 }
 
-export async function setJobState(ids: string[], state: JobState): Promise<number> {
+export async function setJobState(uid: string, ids: string[], state: JobState): Promise<number> {
   if (!ids.length) return 0;
   const rows = await q(
-    `UPDATE jobs SET state = $2 WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)) RETURNING id`,
-    [j(ids), state],
+    `UPDATE jobs SET state = $2 WHERE user_id = $3 AND id IN (SELECT jsonb_array_elements_text($1::jsonb)) RETURNING id`,
+    [j(ids), state, uid],
   );
   return rows.length;
 }
 
-export async function setJobNotes(id: string, notes: string): Promise<boolean> {
-  const rows = await q('UPDATE jobs SET notes = $2 WHERE id = $1 RETURNING id', [id, notes.slice(0, 5000)]);
+export async function setJobNotes(uid: string, id: string, notes: string): Promise<boolean> {
+  const rows = await q('UPDATE jobs SET notes = $2 WHERE id = $1 AND user_id = $3 RETURNING id', [id, notes.slice(0, 5000), uid]);
   return rows.length > 0;
 }
 
@@ -185,7 +186,7 @@ export interface ScoreInput {
   flags?: string[];
 }
 
-export async function saveScores(scores: ScoreInput[]): Promise<{ saved: number; unknown: string[] }> {
+export async function saveScores(uid: string, scores: ScoreInput[]): Promise<{ saved: number; unknown: string[] }> {
   const clean = scores.map((s) => ({
     job_id: s.job_id,
     score: clamp(Math.round(s.score), 0, 100),
@@ -195,8 +196,8 @@ export async function saveScores(scores: ScoreInput[]): Promise<{ saved: number;
   const rows = await q(
     `UPDATE jobs SET score = x.score, score_reasons = x.reasons, score_flags = x.flags
      FROM jsonb_to_recordset($1::jsonb) AS x(job_id text, score int, reasons jsonb, flags jsonb)
-     WHERE jobs.id = x.job_id RETURNING jobs.id`,
-    [j(clean)],
+     WHERE jobs.id = x.job_id AND jobs.user_id = $2 RETURNING jobs.id`,
+    [j(clean), uid],
   );
   const ok = new Set(rows.map((r) => r.id));
   return { saved: ok.size, unknown: clean.map((c) => c.job_id).filter((id) => !ok.has(id)) };
@@ -209,13 +210,13 @@ WITH incoming AS (
     remote boolean, url text, apply_url text, description text, posted_at text, salary text,
     employment_type text, seniority text, tags jsonb, min_years int, max_years int)
 )
-INSERT INTO jobs (id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
+INSERT INTO jobs (user_id, id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
                   description, posted_at, salary, employment_type, seniority, tags, min_years, max_years)
-SELECT id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
+SELECT $2::text, id, dedupe_key, source, external_id, title, company, location, remote, url, apply_url,
        description, NULLIF(posted_at, '')::timestamptz, salary, employment_type, seniority,
        COALESCE(tags, '[]'::jsonb), min_years, max_years
 FROM incoming
-ON CONFLICT (dedupe_key) DO UPDATE SET
+ON CONFLICT (user_id, dedupe_key) DO UPDATE SET
   last_seen = now(),
   min_years = CASE WHEN length(EXCLUDED.description) > length(jobs.description) THEN EXCLUDED.min_years ELSE jobs.min_years END,
   max_years = CASE WHEN length(EXCLUDED.description) > length(jobs.description) THEN EXCLUDED.max_years ELSE jobs.max_years END,
@@ -226,7 +227,7 @@ ON CONFLICT (dedupe_key) DO UPDATE SET
   url = COALESCE(jobs.url, EXCLUDED.url)
 RETURNING id, (xmax = 0) AS inserted`;
 
-export async function upsertJobs(searchId: string | null, jobs: NormJob[], runId: string | null = null): Promise<{ added: number; seen: number; ids: string[] }> {
+export async function upsertJobs(uid: string, searchId: string | null, jobs: NormJob[], runId: string | null = null): Promise<{ added: number; seen: number; ids: string[] }> {
   const byKey = new Map<string, NormJob>();
   for (const job of jobs) if (!byKey.has(job.dedupe_key)) byKey.set(job.dedupe_key, job);
   const unique = [...byKey.values()];
@@ -234,7 +235,7 @@ export async function upsertJobs(searchId: string | null, jobs: NormJob[], runId
   const ids: string[] = [];
   for (let i = 0; i < unique.length; i += 150) {
     const chunk = unique.slice(i, i + 150).map((job) => ({ id: newId('j'), ...job }));
-    const rows = await q(UPSERT_SQL, [j(chunk)]);
+    const rows = await q(UPSERT_SQL, [j(chunk), uid]);
     for (const r of rows) {
       ids.push(r.id);
       if (r.inserted) added++;
@@ -257,7 +258,7 @@ export async function upsertJobs(searchId: string | null, jobs: NormJob[], runId
   return { added, seen: unique.length, ids };
 }
 
-export async function addManualJob(input: {
+export async function addManualJob(uid: string, input: {
   title: string;
   company: string;
   description: string;
@@ -289,6 +290,6 @@ export async function addManualJob(input: {
     min_years: yrs.min,
     max_years: yrs.max,
   };
-  const res = await upsertJobs(null, [job]);
+  const res = await upsertJobs(uid, null, [job]);
   return { id: res.ids[0], duplicate: res.added === 0 };
 }

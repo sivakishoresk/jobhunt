@@ -48,12 +48,12 @@ function brief(j: JobSummary) {
   };
 }
 
-async function noSearchFound(text: string): Promise<string> {
-  const recent = (await listSearches(8)).map((s) => `${s.id}: ${termsText(s.query.keywords)}${termsText(s.query.location) ? ' in ' + termsText(s.query.location) : ''} (${s.jobs} jobs)`);
+async function noSearchFound(uid: string, text: string): Promise<string> {
+  const recent = (await listSearches(uid, 8)).map((s) => `${s.id}: ${termsText(s.query.keywords)}${termsText(s.query.location) ? ' in ' + termsText(s.query.location) : ''} (${s.jobs} jobs)`);
   return `No search matches "${text}". Recent searches: ${recent.join('; ') || 'none yet'}. Use list_searches, then pass a search_id.`;
 }
 
-async function searchReport(sv: SearchView, includeJobs = true) {
+async function searchReport(uid: string, sv: SearchView, includeJobs = true) {
   const running = sv.runs.filter((r) => r.status === 'running' || r.status === 'ingesting');
   const out: Json = {
     search_id: sv.id,
@@ -72,14 +72,14 @@ async function searchReport(sv: SearchView, includeJobs = true) {
     out.note = `Still running: ${running.map((r) => r.source).join(', ')}. LinkedIn runs often take 1-3 minutes. Call get_search with this search_id again in about 30 seconds. Do not start a new search.`;
   }
   if (includeJobs && sv.runs.some((r) => r.status === 'done')) {
-    const { jobs, total } = await jobsForSearch(sv.id, 40);
+    const { jobs, total } = await jobsForSearch(uid, sv.id, 40);
     out.jobs_in_search = total;
     out.jobs = jobs.map(brief);
   }
   return out;
 }
 
-export function createMcpServer(base: string): McpServer {
+export function createMcpServer(base: string, uid: string): McpServer {
   const server = new McpServer({ name: 'jobhunt', version: '0.1.0' }, { instructions: INSTRUCTIONS });
 
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -95,7 +95,7 @@ export function createMcpServer(base: string): McpServer {
       annotations: readOnly,
     },
     async () => {
-      const p = await getProfile();
+      const p = await getProfile(uid);
       if (profileIsEmpty(p)) {
         return ok({ empty: true, message: 'The profile is empty. Ask the user for their resume text, then call update_profile to fill it in.' });
       }
@@ -114,7 +114,7 @@ export function createMcpServer(base: string): McpServer {
     },
     async (args) => {
       try {
-        const p = await saveProfile(args);
+        const p = await saveProfile(uid, args);
         return ok({ saved: true, profile: claudeView(p) as unknown as Json });
       } catch (e) {
         return fail(errMessage(e));
@@ -143,8 +143,8 @@ export function createMcpServer(base: string): McpServer {
     },
     async (a) => {
       try {
-        const profile = await getProfile();
-        let sv = await startSearch({
+        const profile = await getProfile(uid);
+        let sv = await startSearch(uid, {
           keywords: a.keywords,
           location: a.location?.length ? a.location : [profile.basics.location ?? ''],
           remote: !!a.remote_only,
@@ -155,9 +155,9 @@ export function createMcpServer(base: string): McpServer {
         const deadline = Date.now() + 40_000;
         while (sv.status === 'running' && Date.now() < deadline) {
           await sleep(3000);
-          sv = await advanceSearch(sv.id);
+          sv = await advanceSearch(uid, sv.id);
         }
-        return ok(await searchReport(sv));
+        return ok(await searchReport(uid, sv));
       } catch (e) {
         return fail(errMessage(e));
       }
@@ -178,8 +178,8 @@ export function createMcpServer(base: string): McpServer {
     },
     async ({ limit, query }) => {
       try {
-        const rows = query ? (await findSearches(query)).map((m) => m.search).slice(0, limit ?? 15) : await listSearches(limit ?? 15);
-        const unscored = await unscoredCounts(rows.map((r) => r.id));
+        const rows = query ? (await findSearches(uid, query)).map((m) => m.search).slice(0, limit ?? 15) : await listSearches(uid, limit ?? 15);
+        const unscored = await unscoredCounts(uid, rows.map((r) => r.id));
         return ok({
           searches: rows.map((s) => ({
             search_id: s.id,
@@ -212,8 +212,8 @@ export function createMcpServer(base: string): McpServer {
     },
     async ({ search_id }) => {
       try {
-        const sv = await advanceSearch(search_id);
-        return ok(await searchReport(sv));
+        const sv = await advanceSearch(uid, search_id);
+        return ok(await searchReport(uid, sv));
       } catch (e) {
         return fail(errMessage(e));
       }
@@ -252,12 +252,12 @@ export function createMcpServer(base: string): McpServer {
         let searchId = a.search_id;
         let searchRole = a.search_role;
         if (!searchId && a.search) {
-          const m = (await findSearches(a.search))[0];
-          if (!m) return fail(await noSearchFound(a.search));
+          const m = (await findSearches(uid, a.search))[0];
+          if (!m) return fail(await noSearchFound(uid, a.search));
           searchId = m.search.id;
           searchRole = searchRole ?? m.role ?? undefined;
         }
-        const { jobs, total } = await listJobs({
+        const { jobs, total } = await listJobs(uid, {
           state: a.state ?? 'active',
           query: a.query,
           source: a.source,
@@ -292,7 +292,7 @@ export function createMcpServer(base: string): McpServer {
       annotations: readOnly,
     },
     async ({ job_id }) => {
-      const job = await getJob(job_id);
+      const job = await getJob(uid, job_id);
       if (!job) return fail('No job with that id.');
       const { snippet: _s, ...rest } = job;
       return ok({ ...rest, description: job.description.slice(0, 15000) });
@@ -316,7 +316,7 @@ export function createMcpServer(base: string): McpServer {
     },
     async (a) => {
       try {
-        const r = await addManualJob(a);
+        const r = await addManualJob(uid, a);
         return ok({ job_id: r.id, duplicate: r.duplicate });
       } catch (e) {
         return fail(errMessage(e));
@@ -348,11 +348,11 @@ export function createMcpServer(base: string): McpServer {
         let role = a.search_role;
         let found: SearchView | null = null;
         if (searchId) {
-          found = (await listSearches(100)).find((s) => s.id === searchId) ?? null;
+          found = (await listSearches(uid, 100)).find((s) => s.id === searchId) ?? null;
           if (!found) return fail(`No search with id ${searchId}. Use list_searches.`);
         } else if (a.search) {
-          const m = (await findSearches(a.search))[0];
-          if (!m) return fail(await noSearchFound(a.search));
+          const m = (await findSearches(uid, a.search))[0];
+          if (!m) return fail(await noSearchFound(uid, a.search));
           found = m.search;
           searchId = m.search.id;
           role = role ?? m.role ?? undefined;
@@ -363,10 +363,10 @@ export function createMcpServer(base: string): McpServer {
           runRole: searchId ? role : undefined,
           runPlace: searchId ? a.search_place : undefined,
         } as const;
-        const { total: unscoredTotal } = await listJobs({ ...filter, unscored: true, sort: 'newest', limit: 1, offset: 0 });
-        const { jobs, total } = await listJobs({ ...filter, unscored: !a.include_scored, sort: 'newest', limit: a.limit ?? 12, offset: 0 });
+        const { total: unscoredTotal } = await listJobs(uid, { ...filter, unscored: true, sort: 'newest', limit: 1, offset: 0 });
+        const { jobs, total } = await listJobs(uid, { ...filter, unscored: !a.include_scored, sort: 'newest', limit: a.limit ?? 12, offset: 0 });
         const cap = a.description_chars ?? 2500;
-        const full = await Promise.all(jobs.map((j) => getJob(j.id)));
+        const full = await Promise.all(jobs.map((j) => getJob(uid, j.id)));
         return ok({
           search: found
             ? {
@@ -426,7 +426,7 @@ export function createMcpServer(base: string): McpServer {
     },
     async ({ scores }) => {
       try {
-        const r = await saveScores(scores);
+        const r = await saveScores(uid, scores);
         return ok({ saved: r.saved, unknown_job_ids: r.unknown });
       } catch (e) {
         return fail(errMessage(e));
@@ -443,7 +443,7 @@ export function createMcpServer(base: string): McpServer {
       annotations: write,
     },
     async ({ job_ids, state }) => {
-      const n = await setJobState(job_ids, state);
+      const n = await setJobState(uid, job_ids, state);
       return ok({ updated: n });
     },
   );
@@ -460,9 +460,9 @@ export function createMcpServer(base: string): McpServer {
       annotations: readOnly,
     },
     async (a) => {
-      const job = await getJob(a.job_id);
+      const job = await getJob(uid, a.job_id);
       if (!job) return fail('No job with that id.');
-      const profile = await getProfile();
+      const profile = await getProfile(uid);
       const r = buildDraft(profile, job, a);
       return ok({ ok: r.errors.length === 0, errors: r.errors, warnings: r.checks });
     },
@@ -478,13 +478,13 @@ export function createMcpServer(base: string): McpServer {
     },
     async (a) => {
       try {
-        const job = await getJob(a.job_id);
+        const job = await getJob(uid, a.job_id);
         if (!job) return fail('No job with that id.');
-        const profile = await getProfile();
+        const profile = await getProfile(uid);
         if (profileIsEmpty(profile)) return fail('The profile is empty. Fill it in with update_profile first.');
         const r = buildDraft(profile, job, a);
         if (r.errors.length) return fail('The draft refers to profile entries that do not exist.', { errors: r.errors });
-        const saved = await saveApplicationDraft({
+        const saved = await saveApplicationDraft(uid, {
           applicationId: a.application_id,
           jobId: job.id,
           title: job.title,
@@ -515,7 +515,7 @@ export function createMcpServer(base: string): McpServer {
       inputSchema: { status: z.enum(APP_STATUSES).optional() },
       annotations: readOnly,
     },
-    async ({ status }) => ok({ applications: await listApplications(status) as unknown as Json[] }),
+    async ({ status }) => ok({ applications: await listApplications(uid, status) as unknown as Json[] }),
   );
 
   server.registerTool(
@@ -527,7 +527,7 @@ export function createMcpServer(base: string): McpServer {
       annotations: readOnly,
     },
     async ({ application_id }) => {
-      const a = await getApplication(application_id);
+      const a = await getApplication(uid, application_id);
       return a ? ok(a as unknown as Json) : fail('No application with that id.');
     },
   );
@@ -541,10 +541,10 @@ export function createMcpServer(base: string): McpServer {
       annotations: write,
     },
     async ({ application_id, status, note }) => {
-      const cur = await getApplication(application_id);
+      const cur = await getApplication(uid, application_id);
       if (!cur) return fail('No application with that id.');
       const notes = note ? [cur.notes, `${new Date().toISOString().slice(0, 10)}: ${note}`].filter(Boolean).join('\n') : undefined;
-      const a = await updateApplication(application_id, { status, notes });
+      const a = await updateApplication(uid, application_id, { status, notes });
       return ok({ application_id, status: a?.status });
     },
   );

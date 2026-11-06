@@ -1,8 +1,8 @@
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { cookies, headers } from 'next/headers';
-import { env, requireEnv } from './env';
+import { requireEnv } from './env';
 import { q } from './db';
-import { safeEqual } from './util';
+import { getUserById, type User } from './users';
 
 export const SESSION_COOKIE = 'jh_session';
 const SESSION_DAYS = 30;
@@ -35,38 +35,37 @@ export async function verifyJwt(
   return payload as JWTPayload & Record<string, any>;
 }
 
-// ---- password + rate limiting ----
-
-export function passwordMatches(input: string): boolean {
-  const pw = env('APP_PASSWORD');
-  if (pw.length < 12) throw new Error('APP_PASSWORD must be set and at least 12 characters long.');
-  return safeEqual(input, pw);
-}
+// ---- rate limiting ----
 
 export function clientIp(h: Headers): string {
   return (h.get('x-forwarded-for') ?? h.get('x-real-ip') ?? 'unknown').split(',')[0].trim();
 }
 
-const WINDOW_MIN = 15;
-const MAX_FAILS = 8;
-
-export async function tooManyAttempts(ip: string): Promise<boolean> {
-  const rows = await q(
-    `SELECT count(*)::int AS n FROM login_attempts WHERE ip = $1 AND at > now() - interval '${WINDOW_MIN} minutes'`,
-    [ip],
-  );
-  return (rows[0]?.n ?? 0) >= MAX_FAILS;
+/** True when `key` has already failed `max` times in the last `windowMin` minutes. Keys: ip:…, user:…, signup:… */
+export async function tooMany(key: string, max = 8, windowMin = 15): Promise<boolean> {
+  const rows = await q(`SELECT count(*)::int AS n FROM login_attempts WHERE ip = $1 AND at > now() - ($2 || ' minutes')::interval`, [key, String(windowMin)]);
+  return (rows[0]?.n ?? 0) >= max;
 }
 
-export async function recordFailure(ip: string): Promise<void> {
-  await q('INSERT INTO login_attempts (ip) VALUES ($1)', [ip]);
+export async function recordAttempt(key: string): Promise<void> {
+  await q('INSERT INTO login_attempts (ip) VALUES ($1)', [key]);
   await q(`DELETE FROM login_attempts WHERE at < now() - interval '1 day'`);
+}
+
+export async function clearAttempts(key: string): Promise<void> {
+  await q('DELETE FROM login_attempts WHERE ip = $1', [key]);
 }
 
 // ---- web session ----
 
-export async function createSessionCookie(): Promise<{ name: string; value: string; options: Record<string, unknown> }> {
-  const value = await signJwt({ sub: 'owner' }, { typ: 'session', expiresInSec: SESSION_DAYS * 86400 });
+export interface Session {
+  uid: string;
+  username: string;
+  isOwner: boolean;
+}
+
+export async function createSessionCookie(user: User): Promise<{ name: string; value: string; options: Record<string, unknown> }> {
+  const value = await signJwt({ sub: user.id, pv: user.pv }, { typ: 'session', expiresInSec: SESSION_DAYS * 86400 });
   return {
     name: SESSION_COOKIE,
     value,
@@ -80,22 +79,20 @@ export async function createSessionCookie(): Promise<{ name: string; value: stri
   };
 }
 
-export async function isLoggedIn(): Promise<boolean> {
+/** The signed-in person, or null. Checked against the database, so a changed password or deleted account ends the session. */
+export async function getSession(): Promise<Session | null> {
   try {
     const jar = await cookies();
     const token = jar.get(SESSION_COOKIE)?.value;
-    if (!token) return false;
-    await verifyJwt(token, { typ: 'session' });
-    return true;
+    if (!token) return null;
+    const p = await verifyJwt(token, { typ: 'session' });
+    if (typeof p.sub !== 'string') return null;
+    const user = await getUserById(p.sub);
+    if (!user || user.pv !== p.pv) return null;
+    return { uid: user.id, username: user.username, isOwner: user.isOwner };
   } catch {
-    return false;
+    return null;
   }
-}
-
-/** For API route handlers: returns a 401 Response when not signed in, otherwise null. */
-export async function requireSession(): Promise<Response | null> {
-  if (await isLoggedIn()) return null;
-  return Response.json({ error: 'Not signed in.' }, { status: 401 });
 }
 
 export async function sameOriginOk(req: Request): Promise<boolean> {
@@ -112,12 +109,12 @@ export async function sameOriginOk(req: Request): Promise<boolean> {
   }
 }
 
-/** Standard guard for UI API routes. */
-export async function guard(req: Request): Promise<Response | null> {
-  const denied = await requireSession();
-  if (denied) return denied;
-  if (!(await sameOriginOk(req))) return Response.json({ error: 'Cross-site request blocked.' }, { status: 403 });
-  return null;
+/** Standard guard for UI API routes: a Session, or the Response to send back. */
+export async function guard(req: Request): Promise<{ session: Session } | { denied: Response }> {
+  const session = await getSession();
+  if (!session) return { denied: Response.json({ error: 'Not signed in.' }, { status: 401 }) };
+  if (!(await sameOriginOk(req))) return { denied: Response.json({ error: 'Cross-site request blocked.' }, { status: 403 }) };
+  return { session };
 }
 
 // ---- single-use tokens (authorization codes, refresh tokens) ----

@@ -6,8 +6,8 @@ export const dynamic = 'force-dynamic';
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Ctx) {
-  return withUser(req, async () => {
-    const a = await getApplication((await params).id);
+  return withUser(req, async (me) => {
+    const a = await getApplication(me.uid, (await params).id);
     return a ? Response.json(a) : Response.json({ error: 'Application not found.' }, { status: 404 });
   });
 }
@@ -35,15 +35,15 @@ const Patch = z.object({
 });
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  return withUser(req, async () => {
-    const a = await updateApplication((await params).id, Patch.parse(await bodyJson(req)));
+  return withUser(req, async (me) => {
+    const a = await updateApplication(me.uid, (await params).id, Patch.parse(await bodyJson(req)));
     return a ? Response.json(a) : Response.json({ error: 'Application not found.' }, { status: 404 });
   });
 }
 
 export async function DELETE(req: Request, { params }: Ctx) {
-  return withUser(req, async () => {
-    const ok = await deleteApplication((await params).id);
+  return withUser(req, async (me) => {
+    const ok = await deleteApplication(me.uid, (await params).id);
     return ok ? Response.json({ ok: true }) : Response.json({ error: 'Application not found.' }, { status: 404 });
   });
 }

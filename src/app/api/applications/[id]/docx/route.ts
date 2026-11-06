@@ -8,8 +8,8 @@ const MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'document';
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  return withUser(req, async () => {
-    const a = await getApplication((await params).id);
+  return withUser(req, async (me) => {
+    const a = await getApplication(me.uid, (await params).id);
     if (!a) return Response.json({ error: 'Application not found.' }, { status: 404 });
     const doc = new URL(req.url).searchParams.get('doc') === 'cover' ? 'cover' : 'resume';
     const buf =

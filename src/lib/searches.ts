@@ -1,9 +1,10 @@
 import { q, j, kvGet, kvSet, type Row } from './db';
-import { newId, errMessage, truncate } from './util';
+import { newId, errMessage, truncate, HttpError } from './util';
 import { getSources, renderInput, runQueries, MAX_RUNS, MAX_TERMS, asList, type SearchQuery } from './sources';
 import { startRun, getRun, getItems, TERMINAL_FAIL, ApifyError } from './apify';
 import { normalizeItem, matchesKeywords, type NormJob } from './normalize';
 import { iso, listJobs, upsertJobs } from './jobs';
+import { apifyTokenFor, NEEDS_TOKEN } from './users';
 
 const RUN_TIMEOUT_MIN = 15;
 
@@ -47,8 +48,11 @@ function mapRun(r: Row): RunView {
   };
 }
 
-export async function startSearch(query: SearchQuery): Promise<SearchView> {
-  const sources = (await getSources()).filter((s) => s.enabled && (!query.sources?.length || query.sources.includes(s.id)));
+export async function startSearch(uid: string, query: SearchQuery): Promise<SearchView> {
+  const tok = await apifyTokenFor(uid);
+  if (!tok) throw new HttpError(400, NEEDS_TOKEN);
+  const token = tok.token;
+  const sources = (await getSources(uid)).filter((s) => s.enabled && (!query.sources?.length || query.sources.includes(s.id)));
   if (!sources.length) throw new Error('No sources are enabled. Turn one on in Settings → Sources.');
   if (!asList(query.keywords).length) throw new Error('Enter a role or skills to search for.');
   if (asList(query.keywords).length > MAX_TERMS || asList(query.location).length > MAX_TERMS)
@@ -57,7 +61,7 @@ export async function startSearch(query: SearchQuery): Promise<SearchView> {
   if (combos.length * sources.length > MAX_RUNS)
     throw new Error(`That would start ${combos.length * sources.length} paid runs (roles × places × sources). The limit is ${MAX_RUNS}; trim the lists.`);
   const searchId = newId('s');
-  await q('INSERT INTO searches (id, query) VALUES ($1, $2::jsonb)', [searchId, j(query)]);
+  await q('INSERT INTO searches (id, user_id, query) VALUES ($1, $3, $2::jsonb)', [searchId, j(query), uid]);
 
   await Promise.all(
     sources.flatMap((s) =>
@@ -65,7 +69,7 @@ export async function startSearch(query: SearchQuery): Promise<SearchView> {
         const runId = newId('r');
         try {
           const input = renderInput(s.input, c, s.maxResults);
-          const run = await startRun(s.actor, input);
+          const run = await startRun(token, s.actor, input);
           await q(
             `INSERT INTO search_runs (id, search_id, source, actor, apify_run_id, dataset_id, status, kw, loc)
              VALUES ($1,$2,$3,$4,$5,$6,'running',$7,$8)`,
@@ -81,21 +85,21 @@ export async function startSearch(query: SearchQuery): Promise<SearchView> {
       }),
     ),
   );
-  return advanceSearch(searchId);
+  return advanceSearch(uid, searchId);
 }
 
-async function ingestRun(run: Row, query: SearchQuery, localFilter: boolean, searchId: string): Promise<void> {
+async function ingestRun(uid: string, token: string, run: Row, query: SearchQuery, localFilter: boolean, searchId: string): Promise<void> {
   const claimed = await q(`UPDATE search_runs SET status = 'ingesting' WHERE id = $1 AND status = 'running' RETURNING id`, [run.id]);
   if (!claimed.length) return; // another request is already ingesting it
   try {
-    const items = await getItems(run.dataset_id, 500);
+    const items = await getItems(token, run.dataset_id, 500);
     const jobs: NormJob[] = [];
     for (const it of items) {
       const n = normalizeItem(run.source, it);
       if (n) jobs.push(n);
     }
     const kept = localFilter ? jobs.filter((x) => matchesKeywords(x, run.kw ?? asList(query.keywords).join(' '))) : jobs;
-    const res = await upsertJobs(searchId, kept, run.id);
+    const res = await upsertJobs(uid, searchId, kept, run.id);
     await q(`UPDATE search_runs SET status = 'done', found = $2, added = $3, finished_at = now() WHERE id = $1`, [
       run.id,
       kept.length,
@@ -110,11 +114,12 @@ async function ingestRun(run: Row, query: SearchQuery, localFilter: boolean, sea
 }
 
 /** Checks Apify for progress, ingests finished runs, and returns the current state. Safe to call repeatedly. */
-export async function advanceSearch(searchId: string): Promise<SearchView> {
-  const s = await q('SELECT * FROM searches WHERE id = $1', [searchId]);
-  if (!s.length) throw new Error('Search not found.');
+export async function advanceSearch(uid: string, searchId: string): Promise<SearchView> {
+  const s = await q('SELECT * FROM searches WHERE id = $1 AND user_id = $2', [searchId, uid]);
+  if (!s.length) throw new HttpError(404, 'Search not found.');
   const query = s[0].query as SearchQuery;
-  const sources = await getSources();
+  const sources = await getSources(uid);
+  const token = (await apifyTokenFor(uid))?.token ?? '';
   let runs = await q('SELECT * FROM search_runs WHERE search_id = $1 ORDER BY started_at', [searchId]);
 
   await Promise.all(
@@ -122,10 +127,10 @@ export async function advanceSearch(searchId: string): Promise<SearchView> {
       .filter((r) => r.status === 'running' && r.apify_run_id)
       .map(async (r) => {
         try {
-          const info = await getRun(r.apify_run_id);
+          const info = await getRun(token, r.apify_run_id);
           if (info.status === 'SUCCEEDED') {
             const cfg = sources.find((x) => x.id === r.source);
-            await ingestRun(r, query, !!cfg?.localKeywordFilter, searchId);
+            await ingestRun(uid, token, r, query, !!cfg?.localKeywordFilter, searchId);
           } else if (TERMINAL_FAIL.has(info.status)) {
             await q(`UPDATE search_runs SET status='failed', error=$2, finished_at=now() WHERE id=$1 AND status='running'`, [
               r.id,
@@ -171,8 +176,8 @@ export async function advanceSearch(searchId: string): Promise<SearchView> {
   };
 }
 
-export async function listSearches(limit = 30): Promise<SearchView[]> {
-  const searches = await q('SELECT * FROM searches ORDER BY created_at DESC LIMIT $1', [limit]);
+export async function listSearches(uid: string, limit = 30): Promise<SearchView[]> {
+  const searches = await q('SELECT * FROM searches WHERE user_id = $2 ORDER BY created_at DESC LIMIT $1', [limit, uid]);
   if (!searches.length) return [];
   const ids = searches.map((x) => x.id);
   const runRows = await q('SELECT * FROM search_runs WHERE search_id = ANY($1::text[]) ORDER BY started_at', [ids]);
@@ -207,7 +212,7 @@ export interface SearchScope {
  * Apify keeps each run's dataset for a while, so read it again (free) and rebuild the link.
  * Each run is tried once; a dataset that has expired is simply skipped.
  */
-async function reattributeRuns(searchId: string): Promise<void> {
+async function reattributeRuns(uid: string, searchId: string): Promise<void> {
   const runs = await q(
     `SELECT r.* FROM search_runs r
      WHERE r.search_id = $1 AND r.status = 'done' AND r.dataset_id IS NOT NULL
@@ -215,13 +220,15 @@ async function reattributeRuns(searchId: string): Promise<void> {
     [searchId],
   );
   if (!runs.length) return;
-  const sources = await getSources();
+  const sources = await getSources(uid);
+  const token = (await apifyTokenFor(uid))?.token;
+  if (!token) return;
   await Promise.all(
     runs.slice(0, MAX_RUNS).map(async (run) => {
       const flag = `reattr:${run.id}`;
       if (await kvGet(flag)) return;
       try {
-        const items = await getItems(run.dataset_id, 500);
+        const items = await getItems(token, run.dataset_id, 500);
         const keys = new Set<string>();
         const local = !!sources.find((x) => x.id === run.source)?.localKeywordFilter;
         for (const it of items) {
@@ -234,9 +241,9 @@ async function reattributeRuns(searchId: string): Promise<void> {
           await q(
             `INSERT INTO run_jobs (run_id, job_id)
              SELECT $1, j.id FROM jobs j
-             WHERE j.dedupe_key = ANY($2::text[]) AND j.id IN (SELECT job_id FROM search_jobs WHERE search_id = $3)
+             WHERE j.user_id = $4 AND j.dedupe_key = ANY($2::text[]) AND j.id IN (SELECT job_id FROM search_jobs WHERE search_id = $3)
              ON CONFLICT DO NOTHING`,
-            [run.id, [...keys], searchId],
+            [run.id, [...keys], searchId, uid],
           );
         }
         await kvSet(flag, true);
@@ -249,10 +256,11 @@ async function reattributeRuns(searchId: string): Promise<void> {
 }
 
 /** Ids of every job a search returned, and which role/place run found each one. */
-export async function scopeForSearch(searchId: string): Promise<SearchScope> {
-  await reattributeRuns(searchId).catch(() => {});
+export async function scopeForSearch(uid: string, searchId: string): Promise<SearchScope> {
+  const s = await q('SELECT query FROM searches WHERE id = $1 AND user_id = $2', [searchId, uid]);
+  if (!s.length) throw new HttpError(404, 'Search not found.');
+  await reattributeRuns(uid, searchId).catch(() => {});
   const ids = (await q('SELECT job_id FROM search_jobs WHERE search_id = $1', [searchId])).map((r) => r.job_id as string);
-  const s = await q('SELECT query FROM searches WHERE id = $1', [searchId]);
   const query = (s[0]?.query ?? {}) as SearchQuery;
   const queryRoles = asList(query.keywords);
   const queryPlaces = asList(query.location);
@@ -283,17 +291,17 @@ export async function scopeForSearch(searchId: string): Promise<SearchScope> {
   return { ids, roles, places, rows };
 }
 
-export async function jobsForSearch(searchId: string, limit = 50) {
-  return listJobs({ searchId, sort: 'newest', limit, state: 'active' });
+export async function jobsForSearch(uid: string, searchId: string, limit = 50) {
+  return listJobs(uid, { searchId, sort: 'newest', limit, state: 'active' });
 }
 
 /** For each search, how many of its listings have no fit score yet (active jobs only). */
-export async function unscoredCounts(ids: string[]): Promise<Map<string, number>> {
+export async function unscoredCounts(uid: string, ids: string[]): Promise<Map<string, number>> {
   if (!ids.length) return new Map();
   const rows = await q(
     `SELECT sj.search_id, count(*)::int AS n FROM search_jobs sj JOIN jobs jb ON jb.id = sj.job_id
-     WHERE sj.search_id = ANY($1::text[]) AND jb.score IS NULL AND jb.state <> 'dismissed' GROUP BY sj.search_id`,
-    [ids],
+     WHERE sj.search_id = ANY($1::text[]) AND jb.user_id = $2 AND jb.score IS NULL AND jb.state <> 'dismissed' GROUP BY sj.search_id`,
+    [ids, uid],
   );
   return new Map(rows.map((r) => [r.search_id as string, r.n as number]));
 }
@@ -306,10 +314,10 @@ const words = (s: string) => s.toLowerCase().split(/[^a-z0-9+#.]+/).filter((w) =
  * Finds searches by what they were for, e.g. "AI Research Engineer". A search matches when every word appears in
  * one of its roles (then `role` says which) or in its role text as a whole. Newest first; searches with listings first.
  */
-export async function findSearches(text: string, limit = 60): Promise<SearchMatch[]> {
+export async function findSearches(uid: string, text: string, limit = 60): Promise<SearchMatch[]> {
   const want = words(text);
   if (!want.length) return [];
-  const all = await listSearches(limit);
+  const all = await listSearches(uid, limit);
   const out: SearchMatch[] = [];
   for (const sx of all) {
     const roles = asList(sx.query.keywords);

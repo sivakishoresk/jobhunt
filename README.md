@@ -37,20 +37,21 @@ Claude never invents experience. It saves drafts by profile ids (`exp-1`, `proj-
 
    | Name | Value |
    |---|---|
-   | `APP_PASSWORD` | A password of 12+ characters. You sign in with it, and it approves the Claude connection. |
    | `AUTH_SECRET` | 32+ random characters. Run `openssl rand -base64 48`. |
-   | `APIFY_TOKEN` | Apify Console → Settings → API & Integrations. |
+   | `APIFY_TOKEN` | Apify Console → Settings → API & Integrations. Used for the owner account only; other people add their own. |
+   | `OWNER_USERNAME`, `OWNER_PASSWORD` | Optional. The first account, created on first start. Default `sksiva` / `sksiva`. Change the password in Settings → Account straight away. |
+   | `ALLOW_SIGNUP` | Optional. `false` hides account creation on the login page. |
    | `APIFY_MAX_CHARGE_USD` | Optional. Cap per run for pay-per-event actors. Default `1`. |
 
    Everything else in `.env.example` is optional.
-5. **Deploy.** Open the Vercel URL, sign in with `APP_PASSWORD`.
+5. **Deploy.** Open the Vercel URL and sign in as the owner (default `sksiva` / `sksiva`), then change the password in **Settings → Account**. Other people use **Create account** on the login page.
 6. **Fill in your profile** (Profile page): basics, skills, experience, projects, education, publications. This is the only source Claude may draw on for your resume.
 
 ## Connect Claude
 
 1. In the app, open **Settings** and copy the connector address. It ends in `/api/mcp`.
 2. In Claude: Settings → Connectors → Add custom connector. Paste the address. Leave client ID and secret blank unless the form insists (then see `OAUTH_CLIENT_ID` in `.env.example`).
-3. Claude opens a Jobhunt page asking for your password. Enter `APP_PASSWORD` and choose **Allow access**.
+3. Claude opens a Jobhunt page. Sign in with your Jobhunt username and password and choose **Allow access**. Claude then sees only your own data. (Connectors made before accounts existed must be removed and added again once.)
 4. Start a chat: *"Using Jobhunt, find machine learning engineer jobs in Bengaluru posted this week and score them against my profile."*
 
 Claude Code (command line) can use the OAuth flow too, or the fixed-token route: set `MCP_API_TOKEN` on Vercel and run
@@ -66,7 +67,7 @@ Claude Code (command line) can use the OAuth flow too, or the fixed-token route:
 
 ## Search sources and cost
 
-Searching runs Apify actors under your account. Open **Settings → Sources** to change which actor each source uses. **Test with 3 results** runs a small search and shows the raw output and what Jobhunt made of it, so you can see problems before spending credit.
+Searching runs Apify actors under your own Apify account. Open **Settings → Sources** to change which actor each source uses. **Test with 3 results** runs a small search and shows the raw output and what Jobhunt made of it, so you can see problems before spending credit.
 
 | Preset | Pricing (check Apify for current) | Notes |
 |---|---|---|
@@ -77,9 +78,18 @@ Searching runs Apify actors under your account. Open **Settings → Sources** to
 
 Each search costs real money on your Apify account. The default 25 results per source is a few cents. `APIFY_MAX_CHARGE_USD` limits any single run.
 
+## Accounts
+
+- Anyone can create an account on the login page. Each account has its own jobs, searches, profile, applications and sources. Nobody, the owner included, can see another person's jobs or profile.
+- Forgot password: the login page says to contact SK. The owner opens **Settings → People**, sees each person's username and counts only, and sets a new password. That signs the person out everywhere, including their Claude connection.
+- The owner can also delete an account, which removes everything saved under it. The owner account cannot be deleted.
+- **Searches run on the searcher's own Apify account.** Each person adds a token in **Settings → Your Apify account**; it is stored encrypted and never shown again or given to Claude. Only the owner falls back to the server's `APIFY_TOKEN`, so other people can't spend your credit.
+- Existing data from before accounts was assigned to the owner on first start.
+- `AUTH_SECRET` also encrypts stored Apify tokens. Changing it signs everyone out, disconnects Claude and makes saved tokens unreadable (people re-enter them).
+
 ## Security notes
 
-- One user, one password. Every Claude connection needs the password at approval time, and tokens are bound to this app's address.
+- Passwords are hashed with scrypt. Every Claude connection needs a username and password at approval time, tokens are bound to this app's address, and changing a password revokes them.
 - Access tokens last 1 hour, refresh tokens 30 days and rotate. Sign-in attempts are rate limited.
 - Claude can read your profile without email, phone or links; those are added by the server to downloads only.
 - Job postings are untrusted text. Claude is instructed to treat them as data, but review drafts before using them.
@@ -89,7 +99,7 @@ Each search costs real money on your Apify account. The default 25 results per s
 
 ```
 npm install
-cp .env.example .env.local     # set APP_PASSWORD, AUTH_SECRET, APIFY_TOKEN; leave DATABASE_URL blank
+cp .env.example .env.local     # set AUTH_SECRET, APIFY_TOKEN (the default owner is sksiva / sksiva); leave DATABASE_URL blank
 npm run dev
 ```
 
@@ -102,7 +112,7 @@ npm run build
 npm run test:e2e
 ```
 
-This starts a mock Apify server and the built app, then checks the OAuth flow, all 16 tools, search, drafts, DOCX export, and the browser UI with Playwright (screenshots go to `test-output/`).
+This starts a mock Apify server and the built app, then checks the OAuth flow, all 16 tools, search, drafts, DOCX export, two accounts that cannot see each other's data, password change and reset, and the browser UI with Playwright (screenshots go to `test-output/`).
 
 ## Known limits
 

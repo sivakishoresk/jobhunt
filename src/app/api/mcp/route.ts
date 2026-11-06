@@ -11,7 +11,7 @@ async function handle(req: Request): Promise<Response> {
   const auth = await authenticateMcp(req);
   if (!auth.ok) return auth.response;
 
-  const server = createMcpServer(baseUrl(req));
+  const server = createMcpServer(baseUrl(req), auth.uid);
   // Stateless: a fresh server and transport per request, so it runs fine on serverless.
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

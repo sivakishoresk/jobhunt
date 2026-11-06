@@ -4,7 +4,7 @@ import http from 'node:http';
 
 const PORT = Number(process.env.MOCK_PORT ?? 4010);
 const DELAY = Number(process.env.MOCK_DELAY_MS ?? 4000);
-const TOKEN = process.env.MOCK_TOKEN ?? 'test-token';
+const TOKENS = (process.env.MOCK_TOKEN ?? 'test-token,alice-token').split(',');
 
 const TITLES = ['Machine Learning Engineer', 'Senior ML Engineer', 'Applied Scientist', 'LLM Research Engineer', 'Data Scientist', 'AI Engineer', 'Backend Engineer', 'ML Platform Engineer', 'NLP Engineer', 'Computer Vision Engineer', 'MLOps Engineer', 'Research Engineer'];
 const COMPANIES = ['Acme AI', 'Northwind', 'Globex', 'Initech', 'Umbrella Labs', 'Hooli', 'Stark Data', 'Wayne Analytics', 'Pied Piper', 'Soylent', 'Cyberdyne', 'Wonka Systems'];
@@ -83,13 +83,14 @@ const server = http.createServer(async (req, res) => {
   let raw = '';
   for await (const c of req) raw += c;
   const auth = req.headers.authorization ?? '';
-  if (auth !== `Bearer ${TOKEN}`) return send(401, { error: { type: 'user-or-token-not-found', message: 'User was not found or authentication token is not valid' } });
+  const used = auth.replace(/^Bearer /, '');
+  if (!TOKENS.includes(used)) return send(401, { error: { type: 'user-or-token-not-found', message: 'User was not found or authentication token is not valid' } });
 
   let m;
   if (req.method === 'POST' && (m = url.pathname.match(/^\/v2\/acts\/([^/]+)\/runs$/))) {
     const actor = decodeURIComponent(m[1]).replace('~', '/');
     const input = raw ? JSON.parse(raw) : {};
-    log.push({ actor, input, query: Object.fromEntries(url.searchParams) });
+    log.push({ actor, input, token: used, query: Object.fromEntries(url.searchParams) });
     if (actor.startsWith('missing/')) return send(404, { error: { type: 'record-not-found', message: 'Actor was not found' } });
     if (actor.startsWith('rental/')) return send(402, { error: { type: 'actor-is-not-rented', message: 'You must rent this actor first' } });
     const id = `run${++seq}`;

@@ -1,5 +1,6 @@
 import { baseUrl } from '@/lib/env';
-import { clientIp, passwordMatches, recordFailure, tooManyAttempts } from '@/lib/auth';
+import { clearAttempts, clientIp, recordAttempt, tooMany } from '@/lib/auth';
+import { normalizeUsername, verifyLogin } from '@/lib/users';
 import { issueCode, loadClient, redirectAllowedFor, resourceUrl, SCOPE, type Client } from '@/lib/oauth';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ h1{font-size:1.5rem;line-height:1.2;margin:0 0 .5rem;letter-spacing:-.01em}
 p{margin:.5rem 0;color:var(--mute)}ul{margin:.75rem 0 1.25rem;padding-left:1.1rem}li{margin:.25rem 0}
 .who{padding:.75rem 0;border-block:1px solid var(--rule);margin:1rem 0}.who b{color:var(--ink)}
 label{display:block;font-weight:600;margin:1rem 0 .25rem}
-input[type=password]{width:100%;font:inherit;padding:.6rem .7rem;border:1px solid var(--rule);border-radius:3px;background:transparent;color:inherit}
+input[type=password],input[type=text]{width:100%;font:inherit;padding:.6rem .7rem;border:1px solid var(--rule);border-radius:3px;background:transparent;color:inherit}
 input:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .row{display:flex;gap:.75rem;margin-top:1.25rem}
 button{font:inherit;font-weight:600;padding:.6rem 1rem;border-radius:3px;border:1px solid var(--rule);background:transparent;color:inherit;cursor:pointer}
@@ -72,7 +73,7 @@ async function validate(p: Params): Promise<{ ok: true; client: Client } | { ok:
   return { ok: true, client };
 }
 
-function form(p: Params, client: Client, error?: string): Response {
+function form(p: Params, client: Client, error?: string, username = ''): Response {
   const hidden = Object.entries(p)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join('');
@@ -88,15 +89,17 @@ function form(p: Params, client: Client, error?: string): Response {
 <div class="who"><b>${esc(client.name)}</b> will return to <b>${esc(host)}</b></div>
 <p>It will be able to:</p>
 <ul>
-  <li>search for jobs with your Apify account, which can cost money</li>
-  <li>read your profile (without contact details) and your jobs and applications</li>
+  <li>search for jobs with the Apify token saved on your account, which can cost money</li>
+  <li>read your profile (without contact details) and your jobs and applications. It only sees your own.</li>
   <li>save fit scores, change a job's state, and save draft resumes and cover letters</li>
 </ul>
 <p>It can't send applications, and it can't delete anything.</p>
 <form method="post">
   ${hidden}
-  <label for="pw">Your Jobhunt password</label>
-  <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
+  <label for="un">Jobhunt username</label>
+  <input id="un" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(username)}" required ${username ? '' : 'autofocus'}>
+  <label for="pw">Password</label>
+  <input id="pw" name="password" type="password" autocomplete="current-password" required ${username ? 'autofocus' : ''}>
   ${error ? `<p class="err" role="alert">${esc(error)}</p>` : ''}
   <div class="row"><button class="go" name="decision" value="allow">Allow access</button><button name="decision" value="deny" formnovalidate>Cancel</button></div>
 </form>`, error ? 401 : 200);
@@ -128,22 +131,28 @@ export async function POST(req: Request) {
 
   if (data.get('decision') === 'deny') return back({ error: 'access_denied' });
 
-  const ip = clientIp(req.headers);
-  if (await tooManyAttempts(ip)) return form(p, v.client, 'Too many wrong passwords. Wait 15 minutes and try again.');
+  const username = normalizeUsername(String(data.get('username') ?? ''));
+  const ipKey = `ip:${clientIp(req.headers)}`;
+  const userKey = `user:${username.slice(0, 60)}`;
+  if ((await tooMany(ipKey, 20)) || (await tooMany(userKey, 8))) return form(p, v.client, 'Too many wrong attempts. Wait 15 minutes and try again.', username);
   const pw = String(data.get('password') ?? '');
-  let good = false;
+  let user = null;
   try {
-    good = passwordMatches(pw);
+    user = username && pw.length <= 200 ? await verifyLogin(username, pw) : null;
   } catch (e) {
     return page(`<h1>Not set up yet</h1><p>${esc(e instanceof Error ? e.message : 'Server is not configured.')}</p>`, 500);
   }
-  if (!good) {
-    await recordFailure(ip);
-    return form(p, v.client, 'That password is not right.');
+  if (!user) {
+    await recordAttempt(ipKey);
+    await recordAttempt(userKey);
+    return form(p, v.client, 'That username and password do not match.', username);
   }
+  await clearAttempts(userKey);
 
   const base = baseUrl(req);
   const code = await issueCode({
+    uid: user.id,
+    pv: user.pv,
     clientId: v.client.id,
     redirectUri: p.redirect_uri,
     codeChallenge: p.code_challenge,

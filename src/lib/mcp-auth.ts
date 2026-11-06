@@ -2,8 +2,9 @@ import { baseUrl, env } from './env';
 import { verifyJwt } from './auth';
 import { resourceUrl, CORS } from './oauth';
 import { safeEqual } from './util';
+import { getUserById, ownerId } from './users';
 
-export async function authenticateMcp(req: Request): Promise<{ ok: true } | { ok: false; response: Response }> {
+export async function authenticateMcp(req: Request): Promise<{ ok: true; uid: string } | { ok: false; response: Response }> {
   const base = baseUrl(req);
   const challenge = (error?: string) =>
     new Response(JSON.stringify({ error: error ?? 'unauthorized' }), {
@@ -23,11 +24,18 @@ export async function authenticateMcp(req: Request): Promise<{ ok: true } | { ok
   const token = m[1].trim();
 
   const fixed = env('MCP_API_TOKEN');
-  if (fixed.length >= 32 && safeEqual(token, fixed)) return { ok: true };
+  if (fixed.length >= 32 && safeEqual(token, fixed)) {
+    // The fixed token is the owner's.
+    const owner = await ownerId();
+    return owner ? { ok: true, uid: owner } : { ok: false, response: challenge('invalid_token') };
+  }
 
   try {
-    await verifyJwt(token, { typ: 'access', aud: resourceUrl(base) });
-    return { ok: true };
+    const p = await verifyJwt(token, { typ: 'access', aud: resourceUrl(base) });
+    // A password change or a removed account ends the connection.
+    const user = typeof p.uid === 'string' ? await getUserById(p.uid) : null;
+    if (!user || user.pv !== p.pv) return { ok: false, response: challenge('invalid_token') };
+    return { ok: true, uid: user.id };
   } catch {
     return { ok: false, response: challenge('invalid_token') };
   }

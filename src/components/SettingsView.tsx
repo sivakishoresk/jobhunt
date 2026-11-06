@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Preset, SourceConfig } from '@/lib/sources';
 import { api, useToast } from './bits';
+import { AccountPanels } from './AccountPanels';
 
 interface Row extends SourceConfig {
   inputText: string;
@@ -95,6 +96,8 @@ export function SettingsView() {
     <div className="page">
       <h1>Settings</h1>
 
+      <AccountPanels onApify={setTokenSet} />
+
       <section>
         <h2>Connect Claude</h2>
         <div className="panel">
@@ -106,7 +109,7 @@ export function SettingsView() {
           <ol>
             <li>In Claude, open <b>Settings → Connectors → Add custom connector</b>.</li>
             <li>Name it Jobhunt, paste the address above, then press <b>Add</b> and <b>Connect</b>.</li>
-            <li>Enter your Jobhunt password on the page that opens and press <b>Allow access</b>.</li>
+            <li>Sign in with your Jobhunt username and password on the page that opens, then press <b>Allow access</b>. Claude only sees your own data.</li>
           </ol>
           <p className="hint" style={{ marginBottom: 0 }}>
             Claude Code: <code>claude mcp add --transport http jobhunt {mcp}</code>, then run <code>/mcp</code> to sign in.
@@ -118,7 +121,7 @@ export function SettingsView() {
         <h2>Job sources</h2>
         {!tokenSet && (
           <p className="notice">
-            <code>APIFY_TOKEN</code> is not set, so searches will fail. Add it to the environment variables and redeploy.
+            Searching is off until you add your Apify token (see <b>Your Apify account</b> above).
           </p>
         )}
         <p className="hint" style={{ maxWidth: '65ch' }}>
@@ -219,13 +222,6 @@ export function SettingsView() {
         <button className="btn small" onClick={() => { setRows([...rows, { id: `src-${Math.random().toString(36).slice(2, 7)}`, label: 'New source', enabled: false, preset: 'custom', actor: '', input: {}, inputText: '{\n  \n}', maxResults: 25, localKeywordFilter: false }]); setDirty(true); }}>
           Add a source
         </button>
-      </section>
-
-      <section>
-        <h2>Account</h2>
-        <p className="hint">
-          Your password, token and database are set as environment variables on your host, so they are changed there. Changing <code>AUTH_SECRET</code> signs out the web app and disconnects Claude.
-        </p>
       </section>
 
       <div className="savebar">

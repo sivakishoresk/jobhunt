@@ -47,7 +47,7 @@ function ThemeToggle() {
   );
 }
 
-export function Nav() {
+export function Nav({ username }: { username: string }) {
   const path = usePathname();
   const current = (href: string) => (href === '/' ? path === '/' : path.startsWith(href));
   return (
@@ -62,6 +62,9 @@ export function Nav() {
           </Link>
         ))}
       </nav>
+      <span className="whoami" title={`Signed in as ${username}`}>
+        {username}
+      </span>
       <ThemeToggle />
       <button
         className="btn quiet small"

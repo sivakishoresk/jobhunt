@@ -15,9 +15,9 @@ const Body = z.object({
 });
 
 export async function GET(req: Request) {
-  return withUser(req, async () => Response.json({ searches: await listSearches(30) }));
+  return withUser(req, async (me) => Response.json({ searches: await listSearches(me.uid, 30) }));
 }
 
 export async function POST(req: Request) {
-  return withUser(req, async () => Response.json(await startSearch(Body.parse(await bodyJson(req)))));
+  return withUser(req, async (me) => Response.json(await startSearch(me.uid, Body.parse(await bodyJson(req)))));
 }

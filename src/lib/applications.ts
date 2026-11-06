@@ -51,19 +51,19 @@ function full(r: Row): AppFull {
   };
 }
 
-export async function listApplications(status?: string): Promise<AppSummary[]> {
+export async function listApplications(uid: string, status?: string): Promise<AppSummary[]> {
   const rows = status
-    ? await q('SELECT * FROM applications WHERE status = $1 ORDER BY updated_at DESC', [status])
-    : await q('SELECT * FROM applications ORDER BY updated_at DESC');
+    ? await q('SELECT * FROM applications WHERE user_id = $1 AND status = $2 ORDER BY updated_at DESC', [uid, status])
+    : await q('SELECT * FROM applications WHERE user_id = $1 ORDER BY updated_at DESC', [uid]);
   return rows.map(summary);
 }
 
-export async function getApplication(id: string): Promise<AppFull | null> {
-  const rows = await q('SELECT * FROM applications WHERE id = $1', [id]);
+export async function getApplication(uid: string, id: string): Promise<AppFull | null> {
+  const rows = await q('SELECT * FROM applications WHERE id = $1 AND user_id = $2', [id, uid]);
   return rows.length ? full(rows[0]) : null;
 }
 
-export async function saveApplicationDraft(args: {
+export async function saveApplicationDraft(uid: string, args: {
   applicationId?: string;
   jobId: string;
   title: string;
@@ -73,40 +73,42 @@ export async function saveApplicationDraft(args: {
   gaps: string[];
   checks: Check[];
 }): Promise<{ id: string; updated: boolean }> {
+  if (!(await q('SELECT 1 FROM jobs WHERE id = $1 AND user_id = $2', [args.jobId, uid])).length) throw new Error('No job with that id.');
   let target = args.applicationId;
   if (!target) {
-    const existing = await q(`SELECT id FROM applications WHERE job_id = $1 AND status = 'draft' ORDER BY updated_at DESC LIMIT 1`, [args.jobId]);
+    const existing = await q(`SELECT id FROM applications WHERE job_id = $1 AND user_id = $2 AND status = 'draft' ORDER BY updated_at DESC LIMIT 1`, [args.jobId, uid]);
     if (existing.length) target = existing[0].id;
   }
   if (target) {
     const rows = await q(
       `UPDATE applications SET resume = $2::jsonb, cover_letter = $3, gaps = $4::jsonb, checks = $5::jsonb, updated_at = now()
-       WHERE id = $1 RETURNING id`,
-      [target, j(args.resume), args.coverLetter, j(args.gaps), j(args.checks)],
+       WHERE id = $1 AND user_id = $6 RETURNING id`,
+      [target, j(args.resume), args.coverLetter, j(args.gaps), j(args.checks), uid],
     );
     if (rows.length) return { id: target, updated: true };
   }
   const id = newId('a');
   await q(
-    `INSERT INTO applications (id, job_id, title, company, resume, cover_letter, gaps, checks)
-     VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb,$8::jsonb)`,
-    [id, args.jobId, args.title, args.company, j(args.resume), args.coverLetter, j(args.gaps), j(args.checks)],
+    `INSERT INTO applications (id, user_id, job_id, title, company, resume, cover_letter, gaps, checks)
+     VALUES ($1,$9,$2,$3,$4,$5::jsonb,$6,$7::jsonb,$8::jsonb)`,
+    [id, args.jobId, args.title, args.company, j(args.resume), args.coverLetter, j(args.gaps), j(args.checks), uid],
   );
-  await q(`UPDATE jobs SET state = 'saved' WHERE id = $1 AND state = 'new'`, [args.jobId]);
+  await q(`UPDATE jobs SET state = 'saved' WHERE id = $1 AND user_id = $2 AND state = 'new'`, [args.jobId, uid]);
   return { id, updated: false };
 }
 
 export async function updateApplication(
+  uid: string,
   id: string,
   patch: { status?: AppStatus; notes?: string; cover_letter?: string; resume?: ResumeDoc; gaps?: string[]; checks?: Check[] },
 ): Promise<AppFull | null> {
-  const cur = await getApplication(id);
+  const cur = await getApplication(uid, id);
   if (!cur) return null;
   const status = patch.status ?? cur.status;
   const sentAt = status !== 'draft' && !cur.sent_at ? new Date().toISOString() : status === 'draft' ? null : cur.sent_at;
   await q(
     `UPDATE applications SET status = $2, notes = $3, cover_letter = $4, resume = $5::jsonb, gaps = $6::jsonb,
-       checks = $7::jsonb, sent_at = $8, updated_at = now() WHERE id = $1`,
+       checks = $7::jsonb, sent_at = $8, updated_at = now() WHERE id = $1 AND user_id = $9`,
     [
       id,
       status,
@@ -116,19 +118,20 @@ export async function updateApplication(
       j(patch.gaps ?? cur.gaps),
       j(patch.checks ?? cur.checks),
       sentAt,
+      uid,
     ],
   );
   if (patch.status && cur.job_id) {
     if (status === 'draft') {
       // leaving "sent" states does not un-apply the job automatically
     } else {
-      await setJobState([cur.job_id], 'applied');
+      await setJobState(uid, [cur.job_id], 'applied');
     }
   }
-  return getApplication(id);
+  return getApplication(uid, id);
 }
 
-export async function deleteApplication(id: string): Promise<boolean> {
-  const rows = await q('DELETE FROM applications WHERE id = $1 RETURNING id', [id]);
+export async function deleteApplication(uid: string, id: string): Promise<boolean> {
+  const rows = await q('DELETE FROM applications WHERE id = $1 AND user_id = $2 RETURNING id', [id, uid]);
   return rows.length > 0;
 }

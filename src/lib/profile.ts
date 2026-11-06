@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { kvGet, kvSet } from './db';
+import { kvGet, kvSet, ukey } from './db';
 
 const s = z.string().trim();
 const sd = s.default('');
@@ -89,17 +89,17 @@ export function assignIds(p: Profile): Profile {
   };
 }
 
-export async function getProfile(): Promise<Profile> {
-  const stored = await kvGet<unknown>('profile');
+export async function getProfile(uid: string): Promise<Profile> {
+  const stored = await kvGet<unknown>(ukey(uid, 'profile'));
   const parsed = ProfileSchema.safeParse(stored ?? {});
   return assignIds(parsed.success ? parsed.data : ProfileSchema.parse({}));
 }
 
-export async function saveProfile(patch: unknown): Promise<Profile> {
+export async function saveProfile(uid: string, patch: unknown): Promise<Profile> {
   const p = ProfilePatchSchema.parse(patch);
-  const current = await getProfile();
+  const current = await getProfile(uid);
   const next = assignIds(ProfileSchema.parse({ ...current, ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) }));
-  await kvSet('profile', next);
+  await kvSet(ukey(uid, 'profile'), next);
   return next;
 }
 

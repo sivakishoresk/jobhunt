@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { kvGet, kvSet } from './db';
+import { kvGet, kvSet, ukey } from './db';
 
 /** One scraper run: a single role and a single place. */
 export interface RunQuery {
@@ -116,17 +116,17 @@ function pick(id: string) {
   return { actor: p.actor, input: p.input, maxResults: p.maxResults, localKeywordFilter: p.localKeywordFilter };
 }
 
-export async function getSources(): Promise<SourceConfig[]> {
-  const stored = await kvGet<unknown>('sources');
+export async function getSources(uid: string): Promise<SourceConfig[]> {
+  const stored = await kvGet<unknown>(ukey(uid, 'sources'));
   const parsed = z.array(SourceSchema).safeParse(stored);
   return parsed.success && parsed.data.length ? parsed.data : DEFAULT_SOURCES;
 }
 
-export async function saveSources(sources: unknown): Promise<SourceConfig[]> {
+export async function saveSources(uid: string, sources: unknown): Promise<SourceConfig[]> {
   const parsed = z.array(SourceSchema).min(1).max(8).parse(sources);
   const ids = new Set(parsed.map((s) => s.id));
   if (ids.size !== parsed.length) throw new Error('Each source needs a unique id.');
-  await kvSet('sources', parsed);
+  await kvSet(ukey(uid, 'sources'), parsed);
   return parsed;
 }
 

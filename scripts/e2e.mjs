@@ -9,13 +9,14 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const require = createRequire(import.meta.url);
 const PORT = 3100;
 const BASE = `http://localhost:${PORT}`;
-const PASSWORD = 'correct horse battery';
+// The owner account is created on first start with these defaults.
+const OWNER = 'sksiva';
+const PASSWORD = 'sksiva';
 const STATIC_TOKEN = 'static-token-static-token-static-token-1234';
 const env = {
   ...process.env,
   NODE_ENV: 'production',
   PORT: String(PORT),
-  APP_PASSWORD: PASSWORD,
   AUTH_SECRET: 'test-secret-test-secret-test-secret-test-secret',
   APIFY_TOKEN: 'test-token',
   APIFY_API_BASE: 'http://localhost:4010',
@@ -160,11 +161,11 @@ async function main() {
     eq(r.status, 400);
   });
   await step('wrong password is refused', async () => {
-    const r = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), password: 'nope nope nope', decision: 'allow' }) });
+    const r = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), username: OWNER, password: 'nope nope nope', decision: 'allow' }) });
     eq(r.status, 401);
   });
   await step('right password redirects with a code and state', async () => {
-    const r = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), password: PASSWORD, decision: 'allow' }) });
+    const r = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), username: OWNER, password: PASSWORD, decision: 'allow' }) });
     eq(r.status, 302);
     const loc = new URL(r.headers.get('location'));
     eq(loc.origin + loc.pathname, REDIRECT);
@@ -453,9 +454,9 @@ async function main() {
 
   console.log('\nFailure handling');
   const cookie = await (async () => {
-    const bad = await fetch(`${BASE}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'wrong wrong wrong' }) });
+    const bad = await fetch(`${BASE}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: OWNER, password: 'wrong wrong wrong' }) });
     eq(bad.status, 401);
-    const r = await fetch(`${BASE}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
+    const r = await fetch(`${BASE}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: OWNER, password: PASSWORD }) });
     eq(r.status, 200);
     return r.headers.get('set-cookie').split(';')[0];
   })();
@@ -538,6 +539,183 @@ async function main() {
     ok(r.raw && r.input);
   });
 
+  console.log('\nAccounts');
+  const jsonPost = (path, body, ck, method = 'POST') =>
+    fetch(BASE + path, { method, headers: { 'content-type': 'application/json', ...(ck ? { cookie: ck } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const cookieOf = (r) => (r.headers.get('set-cookie') ?? '').split(';')[0];
+  const ownerJobs = (await (await web('/api/jobs')).json()).total;
+  const ownerSearches = (await (await web('/api/searches')).json()).searches.length;
+  const ownerSearchId = (await (await web('/api/searches')).json()).searches[0].id;
+  let aliceCookie, aliceId;
+  await step('sign-up checks the username and password, and usernames are case-insensitive', async () => {
+    eq((await jsonPost('/api/signup', { username: 'al', password: 'longenough1' })).status, 400, 'short username');
+    eq((await jsonPost('/api/signup', { username: 'alice!', password: 'longenough1' })).status, 400, 'odd characters');
+    eq((await jsonPost('/api/signup', { username: 'alice', password: 'short' })).status, 400, 'short password');
+    eq((await jsonPost('/api/signup', { username: 'SKSIVA', password: 'longenough1' })).status, 409, 'taken, ignoring case');
+    const r = await jsonPost('/api/signup', { username: 'Alice', password: 'alice-password-1' });
+    eq(r.status, 200, await r.clone().text());
+    aliceCookie = cookieOf(r);
+    ok(aliceCookie.startsWith('jh_session='));
+    eq((await jsonPost('/api/signup', { username: 'alice', password: 'another-password' })).status, 409);
+    const me = await (await fetch(BASE + '/api/me', { headers: { cookie: aliceCookie } })).json();
+    eq([me.username, me.isOwner, me.apify.source], ['alice', false, 'none']);
+    aliceId = me.username;
+  });
+  await step('a new person starts with nothing: no jobs, searches, profile or applications', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    eq((await (await a('/api/jobs')).json()).total, 0);
+    eq((await (await a('/api/searches')).json()).searches, []);
+    eq((await (await a('/api/applications')).json()).applications, []);
+    const prof = await (await a('/api/profile')).json();
+    eq([prof.basics.name, prof.experience.length], ['', 0]);
+    const src = await (await a('/api/sources')).json();
+    eq(src.sources.map((s) => [s.id, s.enabled]), [['linkedin', true], ['yc', true]], 'default sources, not the owner\'s edited ones');
+  });
+  await step('she cannot read or change the owner\'s data by guessing ids', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    eq((await a('/api/jobs/' + jobA)).status, 404);
+    eq((await a('/api/applications/' + appId)).status, 404);
+    eq((await a(`/api/applications/${appId}/docx`)).status, 404);
+    eq((await a('/api/searches/' + ownerSearchId)).status, 404);
+    eq((await a(`/api/searches/${ownerSearchId}/jobs`)).status, 404);
+    eq((await a('/api/searches/s_legacy/jobs')).status, 404);
+    await a('/api/jobs/' + jobA, { method: 'PATCH', body: '{"state":"dismissed","notes":"hacked"}' });
+    const mine = await (await web('/api/jobs/' + jobA)).json();
+    ok(mine.state !== 'dismissed' && mine.notes !== 'hacked', 'owner\'s job must be unchanged');
+    eq((await a(`/api/applications/${appId}`, { method: 'DELETE' })).status, 404);
+    eq((await (await web(`/api/applications/${appId}`)).json()).id, appId, 'owner\'s application still exists');
+    const pr = await a(`/print/${appId}`);
+    eq(pr.status, 404, 'print view of someone else\'s application');
+  });
+  await step('searching needs her own Apify token; with one, runs use it and stay in her account', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    const body = JSON.stringify({ keywords: ['machine learning engineer'], location: ['Bengaluru'], sources: ['linkedin'] });
+    const no = await a('/api/searches', { method: 'POST', body });
+    eq(no.status, 400);
+    ok(/Apify API token/.test((await no.json()).error));
+    eq((await a('/api/account/apify', { method: 'PUT', body: '{"token":"short"}' })).status, 400);
+    const put = await (await a('/api/account/apify', { method: 'PUT', body: '{"token":"alice-token"}' })).json();
+    eq([put.apify.source, put.apify.last4], ['own', 'oken']);
+    ok(!JSON.stringify(put).includes('alice-token'), 'the token must never be sent back');
+    const start = await (await a('/api/searches', { method: 'POST', body })).json();
+    let sv = start;
+    for (let i = 0; i < 40 && sv.status === 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      sv = await (await a('/api/searches/' + start.id)).json();
+    }
+    eq(sv.status, 'done', JSON.stringify(sv.runs));
+    ok(sv.jobs > 0, 'she got listings');
+    const log = await (await fetch('http://localhost:4010/__log')).json();
+    eq(log.at(-1).token, 'alice-token', 'the run used her token, not the server\'s');
+    eq(log.filter((l) => l.token === 'alice-token').length, 1);
+    eq((await (await a('/api/searches')).json()).searches.length, 1);
+    eq((await (await web('/api/searches')).json()).searches.length, ownerSearches, 'owner\'s search list unchanged');
+    eq((await (await web('/api/jobs')).json()).total, ownerJobs, 'the same listings are stored separately, not added to the owner\'s');
+    eq((await a(`/api/searches/${start.id}/jobs`)).status, 200);
+    eq((await web(`/api/searches/${start.id}/jobs`)).status, 404, 'and the owner cannot open her search');
+  });
+  await step('her profile and sources are separate', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    await a('/api/profile', { method: 'PUT', body: JSON.stringify({ basics: { name: 'Alice Example', headline: 'Tester' }, skills: ['Testing'] }) });
+    eq((await (await a('/api/profile')).json()).basics.name, 'Alice Example');
+    const own = await (await web('/api/profile')).json();
+    ok(own.basics.name !== 'Alice Example', 'owner profile unchanged');
+  });
+
+  // Claude connector as Alice
+  let aliceAccess, aliceClient, alice;
+  await step('the Claude connector asks for a username, and signs her in as herself', async () => {
+    const page = await (await fetch(`${BASE}/oauth/authorize?${new URLSearchParams(authParams())}`)).text();
+    ok(page.includes('name="username"') && page.includes('name="password"'), 'authorize form has both fields');
+    const bad = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), username: 'alice', password: PASSWORD, decision: 'allow' }) });
+    eq(bad.status, 401, 'owner password does not open alice');
+    const ok1 = await fetch(`${BASE}/oauth/authorize`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ ...authParams(), username: 'ALICE', password: 'alice-password-1', decision: 'allow' }) });
+    eq(ok1.status, 302);
+    const code2 = new URL(ok1.headers.get('location')).searchParams.get('code');
+    const t = await (await tokenReq({ grant_type: 'authorization_code', code: code2, redirect_uri: REDIRECT, code_verifier: verifier, resource: `${BASE}/api/mcp` })).json();
+    aliceAccess = t.access_token;
+    aliceClient = new Client({ name: 'e2e-alice', version: '1.0.0' });
+    await aliceClient.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/api/mcp`), { requestInit: { headers: { Authorization: `Bearer ${aliceAccess}` } } }));
+    alice = async (name, args = {}) => {
+      const r = await aliceClient.callTool({ name, arguments: args });
+      let data;
+      try { data = JSON.parse(r.content?.[0]?.text ?? '{}'); } catch { data = {}; }
+      return { isError: !!r.isError, data };
+    };
+    eq((await alice('get_profile')).data.profile?.basics?.name ?? (await alice('get_profile')).data.basics?.name, 'Alice Example');
+  });
+  await step('through Claude she sees only her jobs and searches, and cannot score or read the owner\'s', async () => {
+    const mine = (await alice('list_jobs', { state: 'all', limit: 100 })).data;
+    ok(mine.total > 0 && mine.total < ownerJobs + 1, 'her own listings');
+    ok(!mine.jobs.some((j) => j.id === jobA), 'owner job not in her list');
+    eq((await alice('list_searches')).data.searches.length, 1);
+    eq((await alice('get_job', { job_id: jobA })).isError, true);
+    const sc = (await alice('score_jobs', { scores: [{ job_id: jobA, score: 1, reasons: ['x'] }] })).data;
+    eq(sc.saved, 0);
+    eq(sc.unknown_job_ids, [jobA]);
+    eq((await call('get_job', { job_id: jobA })).data.score, 91, 'owner\'s score untouched');
+    eq((await alice('set_job_state', { job_ids: [jobA], state: 'dismissed' })).data.updated, 0);
+    eq((await alice('list_applications')).data.applications.length, 0);
+    eq((await alice('get_application', { application_id: appId })).isError, true);
+    const draft = await alice('save_application', { job_id: jobA, resume: { experience: [], projects: [], education: [], achievements: [], publications: [], skills: [] }, cover_letter: 'x', gaps: [] });
+    eq(draft.isError, true, 'cannot draft against someone else\'s job');
+    const mineScored = (await alice('jobs_to_score', { limit: 3 })).data;
+    ok(mineScored.jobs.length > 0 && mineScored.jobs.every((j) => j.id !== jobA));
+    eq((await alice('jobs_to_score', { search: 'applied scientist' })).isError, true, 'owner\'s search is not findable by her');
+    const s = await alice('search_jobs', { keywords: ['x engineer'], sources: ['linkedin'] });
+    eq(s.isError, false, 'she has a token, so she can search');
+  });
+  await step('changing a password ends other sessions and Claude connections', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    eq((await a('/api/account/password', { method: 'POST', body: JSON.stringify({ current: 'wrong-current', next: 'new-alice-password' }) })).status, 400);
+    eq((await a('/api/account/password', { method: 'POST', body: JSON.stringify({ current: 'alice-password-1', next: 'tiny' }) })).status, 400);
+    const r = await a('/api/account/password', { method: 'POST', body: JSON.stringify({ current: 'alice-password-1', next: 'new-alice-password' }) });
+    eq(r.status, 200);
+    const fresh = cookieOf(r);
+    eq((await fetch(BASE + '/api/me', { headers: { cookie: aliceCookie } })).status, 401, 'old session dead');
+    eq((await fetch(BASE + '/api/me', { headers: { cookie: fresh } })).status, 200, 'this session kept');
+    aliceCookie = fresh;
+    const mcp = await fetch(`${BASE}/api/mcp`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${aliceAccess}` }, body: '{}' });
+    eq(mcp.status, 401, 'old Claude token dead');
+    eq((await jsonPost('/api/login', { username: 'alice', password: 'alice-password-1' })).status, 401);
+    eq((await jsonPost('/api/login', { username: 'alice', password: 'new-alice-password' })).status, 200);
+    await aliceClient.close().catch(() => {});
+  });
+  await step('only the owner sees the People list; it shows counts, and the owner can reset or delete', async () => {
+    const a = (p, init = {}) => fetch(BASE + p, { ...init, headers: { cookie: aliceCookie, 'content-type': 'application/json' } });
+    eq((await a('/api/admin/users')).status, 403);
+    const list = (await (await web('/api/admin/users')).json()).users;
+    eq(list.map((u) => [u.username, u.isOwner]), [['sksiva', true], ['alice', false]]);
+    const al = list.find((u) => u.username === 'alice');
+    ok(al.jobs > 0 && al.searches >= 1, 'counts only');
+    ok(!JSON.stringify(list).includes('password') && !JSON.stringify(list).includes('Alice Example'), 'no secrets or content in the list');
+    eq((await a(`/api/admin/users/${al.id}`, { method: 'PATCH', body: '{"password":"hijack-attempt-1"}' })).status, 403);
+    eq((await web(`/api/admin/users/${al.id}`, { method: 'PATCH', body: '{"password":"short"}' })).status, 400);
+    eq((await web(`/api/admin/users/${al.id}`, { method: 'PATCH', body: '{"password":"owner-set-password"}' })).status, 200);
+    eq((await fetch(BASE + '/api/me', { headers: { cookie: aliceCookie } })).status, 401, 'her session ended by the reset');
+    eq((await jsonPost('/api/login', { username: 'alice', password: 'new-alice-password' })).status, 401);
+    const back = await jsonPost('/api/login', { username: 'alice', password: 'owner-set-password' });
+    eq(back.status, 200);
+    const owner = list.find((u) => u.isOwner);
+    eq((await web(`/api/admin/users/${owner.id}`, { method: 'DELETE' })).status, 400, 'cannot delete yourself');
+    eq((await web(`/api/admin/users/${al.id}`, { method: 'DELETE' })).status, 200);
+    eq((await jsonPost('/api/login', { username: 'alice', password: 'owner-set-password' })).status, 401);
+    eq((await fetch(BASE + '/api/me', { headers: { cookie: cookieOf(back) } })).status, 401, 'deleted account has no session');
+    eq((await (await web('/api/admin/users')).json()).users.length, 1);
+    eq((await (await web('/api/jobs')).json()).total, ownerJobs, 'owner data untouched by the deletion');
+    // her name is free again
+    eq((await jsonPost('/api/signup', { username: 'alice', password: 'fresh-alice-pass' })).status, 200);
+    const fresh = await fetch(BASE + '/api/jobs', { headers: { cookie: cookieOf(await jsonPost('/api/login', { username: 'alice', password: 'fresh-alice-pass' })) } });
+    eq((await fresh.json()).total, 0, 'a new alice does not inherit the old alice\'s data');
+  });
+  await step('repeated wrong passwords are locked out', async () => {
+    let last;
+    for (let i = 0; i < 9; i++) last = await jsonPost('/api/login', { username: 'ghost', password: 'wrong-password-' + i });
+    eq(last.status, 429);
+    eq((await jsonPost('/api/login', { username: 'sksiva', password: PASSWORD })).status, 200, 'other accounts are unaffected');
+  });
+  void aliceId;
+
   await client.close();
 
   console.log('\nBrowser');
@@ -558,11 +736,20 @@ async function browserTests(cookie, appId) {
     await page.goto(`${BASE}/`);
     ok(page.url().endsWith('/login'), 'should redirect to login: ' + page.url());
     await shot('01-login');
+    await page.click('[role=tab]:nth-child(2)');
+    await page.waitForSelector('#pw2');
+    await shot('01b-signup');
+    await page.setViewportSize({ width: 390, height: 800 });
+    await shot('01c-signup-mobile');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.click('[role=tab]:nth-child(1)');
+    ok(await page.locator('text=Contact SK to change it').count(), 'login page should say who to contact about passwords');
+    await page.fill('#un', OWNER);
     await page.fill('#pw', 'wrong password here');
-    await page.click('button:has-text("Sign in")');
+    await page.click('form button.primary');
     await page.waitForSelector('[role=alert]');
     await page.fill('#pw', PASSWORD);
-    await page.click('button:has-text("Sign in")');
+    await page.click('button[type=submit], form button.primary');
     await page.waitForURL(`${BASE}/`);
   });
   await step('the Jobs page opens on the latest search and lists past searches', async () => {
@@ -748,6 +935,8 @@ async function browserTests(cookie, appId) {
     await page.locator('button:has-text("Test with 3 results")').first().click();
     await page.waitForSelector('pre.json', { timeout: 30000 });
     await shot('10-settings');
+    await page.locator('text=Your Apify account').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-output/10b-settings-account.png', fullPage: true });
   });
   await step('a narrow phone-sized window still works', async () => {
     await page.setViewportSize({ width: 390, height: 800 });

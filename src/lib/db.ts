@@ -1,5 +1,7 @@
 import { env } from './env';
 import { extractYears } from './experience';
+import { hashPassword } from './passwords';
+import { newId } from './util';
 
 export type Row = Record<string, any>;
 export interface Db {
@@ -38,7 +40,7 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS search_runs_search_idx ON search_runs(search_id)`,
   `CREATE TABLE IF NOT EXISTS jobs (
      id text PRIMARY KEY,
-     dedupe_key text NOT NULL UNIQUE,
+     dedupe_key text NOT NULL,
      source text NOT NULL,
      external_id text,
      title text NOT NULL,
@@ -92,6 +94,20 @@ const SCHEMA: string[] = [
      updated_at timestamptz NOT NULL DEFAULT now(),
      sent_at timestamptz
    )`,
+  `CREATE TABLE IF NOT EXISTS users (
+     id text PRIMARY KEY,
+     username text NOT NULL UNIQUE,
+     password_hash text NOT NULL,
+     is_owner boolean NOT NULL DEFAULT false,
+     apify_token_enc text,
+     created_at timestamptz NOT NULL DEFAULT now(),
+     last_login_at timestamptz
+   )`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id text`,
+  `ALTER TABLE searches ADD COLUMN IF NOT EXISTS user_id text`,
+  `ALTER TABLE applications ADD COLUMN IF NOT EXISTS user_id text`,
+  // Jobs used to be unique across the whole database; now they are unique per user.
+  `ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_dedupe_key_key`,
   `CREATE TABLE IF NOT EXISTS used_tokens (
      jti text PRIMARY KEY,
      expires_at timestamptz NOT NULL
@@ -101,6 +117,14 @@ const SCHEMA: string[] = [
      ip text NOT NULL,
      at timestamptz NOT NULL DEFAULT now()
    )`,
+];
+
+// Created after existing rows are assigned to the owner (see migrateToUsers).
+const USER_INDEXES: string[] = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS jobs_user_dedupe_idx ON jobs(user_id, dedupe_key)`,
+  `CREATE INDEX IF NOT EXISTS jobs_user_idx ON jobs(user_id, state)`,
+  `CREATE INDEX IF NOT EXISTS searches_user_idx ON searches(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS applications_user_idx ON applications(user_id, updated_at DESC)`,
 ];
 
 async function open(): Promise<Db> {
@@ -145,6 +169,38 @@ async function backfillYears(d: Db): Promise<void> {
   await d.query(`INSERT INTO kv (key, value) VALUES ('years_backfill_v1', 'true'::jsonb) ON CONFLICT (key) DO NOTHING`);
 }
 
+/**
+ * Accounts arrived after the first release: everything saved before belongs to the owner,
+ * who is created here on first start (OWNER_USERNAME / OWNER_PASSWORD, default sksiva / sksiva).
+ */
+async function migrateToUsers(d: Db): Promise<void> {
+  let owner = (await d.query(`SELECT id FROM users WHERE is_owner ORDER BY created_at LIMIT 1`))[0]?.id as string | undefined;
+  if (!owner) {
+    const username = (env('OWNER_USERNAME') || 'sksiva').toLowerCase();
+    const hash = await hashPassword(env('OWNER_PASSWORD') || 'sksiva');
+    const made = await d.query(
+      `INSERT INTO users (id, username, password_hash, is_owner) VALUES ($1, $2, $3, true) ON CONFLICT (username) DO NOTHING RETURNING id`,
+      [newId('u'), username, hash],
+    );
+    owner = (made[0]?.id ?? (await d.query(`SELECT id FROM users WHERE is_owner LIMIT 1`))[0]?.id) as string | undefined;
+    if (!owner) throw new Error('Could not create the owner account.');
+  }
+  for (const t of ['jobs', 'searches', 'applications']) await d.query(`UPDATE ${t} SET user_id = $1 WHERE user_id IS NULL`, [owner]);
+  if (!(await d.query(`SELECT 1 FROM kv WHERE key = 'users_migrated_v1'`)).length) {
+    for (const k of ['profile', 'sources']) {
+      await d.query(
+        `INSERT INTO kv (key, value) SELECT $2, value FROM kv WHERE key = $1 ON CONFLICT (key) DO NOTHING`,
+        [k, `u:${owner}:${k}`],
+      );
+    }
+    await d.query(`INSERT INTO kv (key, value) VALUES ('users_migrated_v1', 'true'::jsonb) ON CONFLICT (key) DO NOTHING`);
+  }
+  for (const stmt of USER_INDEXES) await d.query(stmt);
+  for (const t of ['jobs', 'searches', 'applications']) {
+    await d.query(`ALTER TABLE ${t} ALTER COLUMN user_id SET NOT NULL`).catch(() => {});
+  }
+}
+
 const g = globalThis as unknown as { __jhDb?: Promise<Db> };
 
 export function db(): Promise<Db> {
@@ -152,6 +208,7 @@ export function db(): Promise<Db> {
     g.__jhDb = (async () => {
       const d = await open();
       for (const stmt of SCHEMA) await d.query(stmt);
+      await migrateToUsers(d);
       await backfillYears(d).catch(() => {}); // best effort; the app works without it
       return d;
     })().catch((e) => {
@@ -181,3 +238,6 @@ export async function kvSet(key: string, value: unknown): Promise<void> {
     [key, j(value)],
   );
 }
+
+/** Per-user key-value storage (profile, sources). */
+export const ukey = (uid: string, key: string) => `u:${uid}:${key}`;

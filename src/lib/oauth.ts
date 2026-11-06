@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { env } from './env';
 import { signJwt, verifyJwt, consumeOnce } from './auth';
 import { safeEqual } from './util';
+import { getUserById, type User } from './users';
 
 export const SCOPE = 'jobhunt';
 export const ACCESS_TTL = 3600;
@@ -74,6 +75,8 @@ export function s256(verifier: string): string {
 }
 
 export async function issueCode(args: {
+  uid: string;
+  pv: string;
   clientId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -81,25 +84,32 @@ export async function issueCode(args: {
   base: string;
 }): Promise<string> {
   return signJwt(
-    { cid: args.clientId, ru: args.redirectUri, cc: args.codeChallenge, res: args.resource },
+    { cid: args.clientId, ru: args.redirectUri, cc: args.codeChallenge, res: args.resource, uid: args.uid, pv: args.pv },
     { typ: 'code', iss: args.base, expiresInSec: CODE_TTL, jti: randomBytes(12).toString('hex') },
   );
 }
 
-export async function issueTokens(args: { clientId: string; resource: string; base: string }) {
-  const access = await signJwt({ cid: args.clientId, scope: SCOPE }, {
+export async function issueTokens(args: { clientId: string; resource: string; base: string; uid: string; pv: string }) {
+  const access = await signJwt({ cid: args.clientId, scope: SCOPE, uid: args.uid, pv: args.pv }, {
     typ: 'access',
     aud: args.resource,
     iss: args.base,
     expiresInSec: ACCESS_TTL,
   });
-  const refresh = await signJwt({ cid: args.clientId, res: args.resource, scope: SCOPE }, {
+  const refresh = await signJwt({ cid: args.clientId, res: args.resource, scope: SCOPE, uid: args.uid, pv: args.pv }, {
     typ: 'refresh',
     iss: args.base,
     expiresInSec: REFRESH_TTL,
     jti: randomBytes(12).toString('hex'),
   });
   return { access_token: access, token_type: 'Bearer', expires_in: ACCESS_TTL, refresh_token: refresh, scope: SCOPE };
+}
+
+/** The user a code or token was issued to, if they still exist and have not changed their password since. */
+async function currentUser(p: Record<string, any>): Promise<User | null> {
+  if (typeof p.uid !== 'string' || typeof p.pv !== 'string') return null;
+  const u = await getUserById(p.uid);
+  return u && u.pv === p.pv ? u : null;
 }
 
 export type TokenResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; description: string };
@@ -138,7 +148,9 @@ export async function exchange(form: URLSearchParams, base: string, basicAuth?: 
     if (!(await consumeOnce(String(p.jti), Number(p.exp)))) {
       return { ok: false, error: 'invalid_grant', description: 'Code was already used.' };
     }
-    return { ok: true, body: await issueTokens({ clientId: client.id, resource, base }) };
+    const who = await currentUser(p);
+    if (!who) return { ok: false, error: 'invalid_grant', description: 'This sign-in is no longer valid. Connect again.' };
+    return { ok: true, body: await issueTokens({ clientId: client.id, resource, base, uid: who.id, pv: who.pv }) };
   }
 
   if (grant === 'refresh_token') {
@@ -152,7 +164,9 @@ export async function exchange(form: URLSearchParams, base: string, basicAuth?: 
     if (!(await consumeOnce(String(p.jti), Number(p.exp)))) {
       return { ok: false, error: 'invalid_grant', description: 'Refresh token was already used.' };
     }
-    return { ok: true, body: await issueTokens({ clientId: client.id, resource, base }) };
+    const who = await currentUser(p);
+    if (!who) return { ok: false, error: 'invalid_grant', description: 'This sign-in is no longer valid (password changed or account removed). Connect again.' };
+    return { ok: true, body: await issueTokens({ clientId: client.id, resource, base, uid: who.id, pv: who.pv }) };
   }
 
   return { ok: false, error: 'unsupported_grant_type', description: 'Use authorization_code or refresh_token.' };

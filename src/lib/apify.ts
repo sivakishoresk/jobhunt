@@ -13,9 +13,8 @@ function actorPath(actor: string): string {
   return actor.trim().replace('/', '~');
 }
 
-async function call(path: string, init: RequestInit = {}): Promise<any> {
-  const token = env('APIFY_TOKEN');
-  if (!token) throw new ApifyError('APIFY_TOKEN is not set. Add your Apify API token to the environment.', 500);
+async function call(token: string, path: string, init: RequestInit = {}): Promise<any> {
+  if (!token) throw new ApifyError('No Apify token. Add yours in Settings.', 500);
   const res = await fetch(`${apifyBase()}${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
@@ -32,7 +31,7 @@ async function call(path: string, init: RequestInit = {}): Promise<any> {
     const apiMsg: string = body?.error?.message ?? text.slice(0, 300) ?? res.statusText;
     const type: string = body?.error?.type ?? '';
     let hint = '';
-    if (res.status === 401) hint = ' Check APIFY_TOKEN.';
+    if (res.status === 401) hint = ' Check your Apify token in Settings.';
     else if (res.status === 402 || /credit|limit|usage|payment|rent/i.test(apiMsg + type))
       hint = ' This usually means the Apify account is out of credit, or the actor needs a paid rental first.';
     else if (res.status === 404) hint = ' The actor was not found. Check the actor name in Settings → Sources.';
@@ -48,12 +47,12 @@ export interface RunInfo {
   datasetId: string;
 }
 
-export async function startRun(actor: string, input: unknown): Promise<RunInfo> {
+export async function startRun(token: string, actor: string, input: unknown): Promise<RunInfo> {
   const params = new URLSearchParams();
   const cap = env('APIFY_MAX_CHARGE_USD') || '1';
   if (Number(cap) > 0) params.set('maxTotalChargeUsd', cap);
   params.set('timeout', '600');
-  const body = await call(`/v2/acts/${actorPath(actor)}/runs?${params}`, {
+  const body = await call(token, `/v2/acts/${actorPath(actor)}/runs?${params}`, {
     method: 'POST',
     body: JSON.stringify(input ?? {}),
   });
@@ -62,22 +61,23 @@ export async function startRun(actor: string, input: unknown): Promise<RunInfo> 
   return { id: d.id, status: d.status, datasetId: d.defaultDatasetId };
 }
 
-export async function getRun(runId: string): Promise<RunInfo & { statusMessage?: string }> {
-  const body = await call(`/v2/actor-runs/${encodeURIComponent(runId)}`);
+export async function getRun(token: string, runId: string): Promise<RunInfo & { statusMessage?: string }> {
+  const body = await call(token, `/v2/actor-runs/${encodeURIComponent(runId)}`);
   const d = body?.data;
   return { id: d.id, status: d.status, datasetId: d.defaultDatasetId, statusMessage: d.statusMessage };
 }
 
-export async function getItems(datasetId: string, limit = 500): Promise<Record<string, unknown>[]> {
+export async function getItems(token: string, datasetId: string, limit = 500): Promise<Record<string, unknown>[]> {
   const body = await call(
+    token,
     `/v2/datasets/${encodeURIComponent(datasetId)}/items?clean=true&format=json&limit=${limit}`,
   );
   return Array.isArray(body) ? body : [];
 }
 
-export async function abortRun(runId: string): Promise<void> {
+export async function abortRun(token: string, runId: string): Promise<void> {
   try {
-    await call(`/v2/actor-runs/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
+    await call(token, `/v2/actor-runs/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
   } catch {
     /* best effort */
   }
