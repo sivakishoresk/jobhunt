@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { useState } from 'react';
 
 export function LoginForm({ signupOpen }: { signupOpen: boolean }) {
@@ -82,6 +83,9 @@ export function LoginForm({ signupOpen }: { signupOpen: boolean }) {
         </button>
         {!up && <p className="hint forgot">Forgot your password? Contact SK to change it.</p>}
         {up && <p className="hint forgot">Your jobs, searches and drafts are private to your account. Forgot your password later? Contact SK to change it.</p>}
+        <p className="hint forgot">
+          New here? <Link href="/guide">Read the guide</Link> to see how it works.
+        </p>
       </form>
     </main>
   );

@@ -47,6 +47,10 @@ Claude never invents experience. It saves drafts by profile ids (`exp-1`, `proj-
 5. **Deploy.** Open the Vercel URL and sign in as the owner (default `sksiva` / `sksiva`), then change the password in **Settings → Account**. Other people use **Create account** on the login page.
 6. **Fill in your profile** (Profile page): basics, skills, experience, projects, education, publications. This is the only source Claude may draw on for your resume.
 
+## User guide
+
+`/guide` is a public page (no sign-in needed) that walks a new person through setup with a progress checklist, a simulated Claude chat for each step (profile from résumé, search, score, draft, track), a copyable prompt library, an app tour and FAQs. The login page and the nav bar link to it. The examples on it are made up and touch no data.
+
 ## Connect Claude
 
 1. In the app, open **Settings** and copy the connector address. It ends in `/api/mcp`.

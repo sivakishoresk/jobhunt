@@ -8,11 +8,12 @@ const LINKS = [
   { href: '/applications', label: 'Applications' },
   { href: '/profile', label: 'Profile' },
   { href: '/settings', label: 'Settings' },
+  { href: '/guide', label: 'Guide' },
 ];
 
 type Theme = 'light' | 'dark';
 
-function ThemeToggle() {
+export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme | null>(null);
   useEffect(() => {
     const set = document.documentElement.dataset.theme;
