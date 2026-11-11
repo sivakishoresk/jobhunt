@@ -7,6 +7,8 @@ import { termsText } from '@/lib/terms';
 import { asList } from '@/lib/sources';
 import { listJobs, getJob, addManualJob, saveScores, setJobState, JOB_STATES, type JobSummary } from '@/lib/jobs';
 import { buildDraft, DraftInputSchema } from '@/lib/drafts';
+import { AssessmentSchema, RUBRIC, profileYears } from '@/lib/fit';
+import { saveAssessments } from '@/lib/scoring';
 import {
   APP_STATUSES,
   getApplication,
@@ -18,7 +20,9 @@ import { sleep, errMessage } from '@/lib/util';
 
 const INSTRUCTIONS = `Jobhunt is the user's personal job-search workbench. Jobs come from Apify scrapers (LinkedIn, Y Combinator) and are stored in the user's own database.
 
-Typical flow: get_profile (check it is filled in) -> search_jobs -> jobs_to_score (optionally for one past search or role) -> score_jobs -> save_application for the one(s) the user picks. Use list_jobs (and list_searches) to see jobs already found before searching again, because every search starts paid Apify runs and a repeated result is still billed. Prefer a short posted_within_days window.
+Typical flow: get_profile (check it is filled in) -> search_jobs -> jobs_to_score (optionally for one past search or role) -> score_jobs with structured assessments -> save_application for the one(s) the user picks. Use list_jobs (and list_searches) to see jobs already found before searching again, because every search starts paid Apify runs and a repeated result is still billed. Prefer a short posted_within_days window.
+
+Scoring: you do not invent a 0-100 number. For each job you report structured judgments (requirements, how well the profile proves each, years asked, ratings) and the server computes fit, estimated callback chance and "worth" from them. Jobs scored before the profile last changed are marked stale; jobs_to_score with stale_only returns them for re-scoring.
 
 Rules: never invent experience, employers, numbers, degrees or skills. Resumes and cover letters may only use facts from get_profile, and anything the posting asks for that the profile lacks goes in "gaps". Nothing is ever sent or deleted for the user; drafts wait in the app for review.
 
@@ -43,6 +47,10 @@ function brief(j: JobSummary) {
     salary: j.salary ?? undefined,
     state: j.state,
     score: j.score ?? undefined,
+    win_pct: j.win_pct ?? undefined,
+    worth: j.worth ?? undefined,
+    effort: j.effort ?? undefined,
+    stale: j.stale || undefined,
     years_asked: yearsLabel(j.min_years, j.max_years) ?? undefined,
     description: j.desc_len > 400 ? 'full' : j.desc_len > 0 ? 'short' : 'none',
   };
@@ -90,7 +98,7 @@ export function createMcpServer(base: string, uid: string): McpServer {
     {
       title: 'Read my profile',
       description:
-        "Returns the user's career profile (summary, skills, experience, projects, education, scholastic achievements, publications, suggested job titles) with stable ids such as exp-1 and proj-2. Contact details and links are not included. Read this before scoring jobs or writing any resume or cover letter.",
+        "Returns the user's career profile (summary, skills, experience, projects, education, scholastic achievements, publications, suggested job titles, and scoring preferences such as work authorisation, acceptable locations, salary floor and blocked companies) with stable ids such as exp-1 and proj-2. Contact details and links are not included. Read this before scoring jobs or writing any resume or cover letter.",
       inputSchema: {},
       annotations: readOnly,
     },
@@ -108,7 +116,7 @@ export function createMcpServer(base: string, uid: string): McpServer {
     {
       title: 'Update my profile',
       description:
-        'Replaces whole sections of the profile with the data given (omitted sections are left alone). Use it to turn a pasted resume into a structured profile. Copy facts exactly; do not embellish. Put awards, ranks, scholarships, olympiads and similar academic honours in achievements, not in an education detail. Also set jobTitles to up to 5 job titles that realistically match the resume (most fitting first; titles only, no companies). Keep existing ids when editing entries so saved drafts still match. Dates are free text like "Jun 2024" and end can be "Present".',
+        'Replaces whole sections of the profile with the data given (omitted sections are left alone). basics and preferences are merged field by field, so sending one field does not blank the others (email, phone and links are never lost). Use it to turn a pasted resume into a structured profile. Copy facts exactly; do not embellish. Put awards, ranks, scholarships, olympiads and similar academic honours in achievements, not in an education detail. Also set jobTitles to up to 5 job titles that realistically match the resume (most fitting first; titles only, no companies). Keep existing ids when editing entries so saved drafts still match. Dates are free text like "Jun 2024" and end can be "Present".',
       inputSchema: ProfilePatchSchema.shape,
       annotations: { ...write, idempotentHint: false },
     },
@@ -241,7 +249,8 @@ export function createMcpServer(base: string, uid: string): McpServer {
         years_min: z.number().int().min(0).max(40).optional().describe('Postings that ask for at least this many years of experience'),
         years_max: z.number().int().min(0).max(40).optional().describe('Postings that ask for at most this many years of experience'),
         include_unstated_years: z.boolean().optional().describe('With years_min/years_max: also include postings that state no number. Default true.'),
-        sort: z.enum(['newest', 'score', 'company']).optional(),
+        stale_only: z.boolean().optional().describe('Only jobs scored before the profile last changed'),
+        sort: z.enum(['newest', 'score', 'worth', 'company']).optional().describe('worth = estimated callback chance x how much you would want the job'),
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
       },
@@ -271,6 +280,7 @@ export function createMcpServer(base: string, uid: string): McpServer {
           yearsMin: a.years_min,
           yearsMax: a.years_max,
           yearsUnstated: a.include_unstated_years,
+          staleOnly: a.stale_only,
           sort: a.sort ?? 'newest',
           limit: a.limit ?? 30,
           offset: a.offset ?? 0,
@@ -337,6 +347,7 @@ export function createMcpServer(base: string, uid: string): McpServer {
         search_place: z.string().optional().describe('With a search: only listings found for this place'),
         state: z.enum(['active', 'all', ...JOB_STATES]).optional().describe('Default active (everything except dismissed)'),
         include_scored: z.boolean().optional().describe('Also return jobs that already have a score'),
+        stale_only: z.boolean().optional().describe('Return only jobs scored before the profile last changed, to re-score them'),
         limit: z.number().int().min(1).max(25).optional().describe('Jobs per batch. Default 12.'),
         description_chars: z.number().int().min(500).max(6000).optional().describe('Characters of each description to return. Default 2500.'),
       },
@@ -364,7 +375,9 @@ export function createMcpServer(base: string, uid: string): McpServer {
           runPlace: searchId ? a.search_place : undefined,
         } as const;
         const { total: unscoredTotal } = await listJobs(uid, { ...filter, unscored: true, sort: 'newest', limit: 1, offset: 0 });
-        const { jobs, total } = await listJobs(uid, { ...filter, unscored: !a.include_scored, sort: 'newest', limit: a.limit ?? 12, offset: 0 });
+        const { total: staleTotal } = await listJobs(uid, { ...filter, staleOnly: true, sort: 'newest', limit: 1, offset: 0 });
+        const { jobs, total } = await listJobs(uid, { ...filter, unscored: !a.include_scored && !a.stale_only, staleOnly: a.stale_only, sort: 'newest', limit: a.limit ?? 12, offset: 0 });
+        const profile = await getProfile(uid);
         const cap = a.description_chars ?? 2500;
         const full = await Promise.all(jobs.map((j) => getJob(uid, j.id)));
         return ok({
@@ -380,22 +393,28 @@ export function createMcpServer(base: string, uid: string): McpServer {
               }
             : 'all jobs',
           unscored_in_scope: unscoredTotal,
+          stale_in_scope: staleTotal,
+          profile_years: profileYears(profile),
           matching: total,
           returned: jobs.length,
           jobs: full.filter(Boolean).map((j) => ({
             ...brief(j!),
             url: j!.url ?? undefined,
+            years_parsed: j!.min_years ?? undefined,
             seniority: j!.seniority ?? undefined,
             employment_type: j!.employment_type ?? undefined,
             existing_reasons: a.include_scored ? j!.score_reasons : undefined,
             description: j!.description.slice(0, cap),
             description_truncated: j!.description.length > cap || undefined,
           })),
+          ...(jobs.length ? { how_to_score: RUBRIC } : {}),
           next: jobs.length
-            ? 'Read get_profile once, score each job strictly from the profile and its description (a job with a short or missing description gets a lower-confidence score and a flag saying so), then call score_jobs. Call jobs_to_score again for the next batch.'
-            : unscoredTotal === 0
-              ? 'Everything in this scope already has a score.'
-              : 'Nothing returned for these filters.',
+            ? 'Read get_profile once (including preferences), fill in one assessment per job following how_to_score, strictly from the profile and the description, then call score_jobs with assessments. Call jobs_to_score again for the next batch.'
+            : unscoredTotal === 0 && staleTotal === 0
+              ? 'Everything in this scope already has a current score.'
+              : unscoredTotal === 0
+                ? `Nothing is unscored, but ${staleTotal} job(s) were scored before the profile changed. Call again with stale_only to re-score them.`
+                : 'Nothing returned for these filters.',
         });
       } catch (e) {
         return fail(errMessage(e));
@@ -408,8 +427,9 @@ export function createMcpServer(base: string, uid: string): McpServer {
     {
       title: 'Save fit scores',
       description:
-        'Saves how well jobs fit the profile (0-100) with short reasons and red flags. Scores appear in the app and sort the list. Base them only on get_profile and the posting. Be strict: 80+ means a strong match on seniority, skills and location.',
+        'Saves how well jobs fit the profile. Preferred: send assessments (structured judgments per job, see how_to_score in jobs_to_score). The server computes fit (0-100), estimated callback chance, worth and a recommended effort level from them, so scores are consistent and explainable. Base them only on get_profile and the posting. The older scores format (a plain 0-100 number with reasons and flags) is still accepted but carries no breakdown.',
       inputSchema: {
+        assessments: z.array(AssessmentSchema).min(1).max(25).optional(),
         scores: z
           .array(
             z.object({
@@ -420,14 +440,29 @@ export function createMcpServer(base: string, uid: string): McpServer {
             }),
           )
           .min(1)
-          .max(50),
+          .max(50)
+          .optional(),
       },
       annotations: write,
     },
-    async ({ scores }) => {
+    async ({ assessments, scores }) => {
       try {
-        const r = await saveScores(uid, scores);
-        return ok({ saved: r.saved, unknown_job_ids: r.unknown });
+        if (!assessments?.length && !scores?.length) return fail('Send assessments (preferred) or scores.');
+        let saved = 0;
+        const unknown: string[] = [];
+        let results: unknown[] = [];
+        if (assessments?.length) {
+          const r = await saveAssessments(uid, assessments);
+          saved += r.saved;
+          unknown.push(...r.unknown);
+          results = r.results;
+        }
+        if (scores?.length) {
+          const r = await saveScores(uid, scores);
+          saved += r.saved;
+          unknown.push(...r.unknown);
+        }
+        return ok({ saved, unknown_job_ids: unknown, results });
       } catch (e) {
         return fail(errMessage(e));
       }

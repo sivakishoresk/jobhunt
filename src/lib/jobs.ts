@@ -3,6 +3,8 @@ import { q, j, type Row } from './db';
 import { newId, clamp } from './util';
 import type { NormJob } from './normalize';
 import { extractYears } from './experience';
+import { currentRev } from './scoring';
+import type { ScoreDetail } from './fit';
 
 export const JOB_STATES = ['new', 'saved', 'applied', 'dismissed'] as const;
 export type JobState = (typeof JOB_STATES)[number];
@@ -25,13 +27,21 @@ export interface JobSummary {
   tags: string[];
   state: JobState;
   score: number | null;
+  /** Estimated callback chance in percent, and the figure jobs are ranked by (chance x how much you'd want it). */
+  win_pct: number | null;
+  worth: number | null;
+  effort: string | null;
+  /** 0 none, about 0.5 you know someone, about 0.8 someone will refer you. */
+  referral: number;
+  /** Scored before your profile last changed, so the score may be out of date. */
+  stale: boolean;
   snippet: string;
   desc_len: number;
   min_years: number | null;
   max_years: number | null;
 }
 
-function mapSummary(r: Row): JobSummary {
+function mapSummary(r: Row, rev: string): JobSummary {
   return {
     id: r.id,
     source: r.source,
@@ -48,6 +58,11 @@ function mapSummary(r: Row): JobSummary {
     tags: Array.isArray(r.tags) ? r.tags : [],
     state: r.state,
     score: r.score ?? null,
+    win_pct: r.win_pct ?? null,
+    worth: r.worth ?? null,
+    effort: r.effort ?? null,
+    referral: Number(r.referral ?? 0),
+    stale: r.score != null && r.score_profile !== rev,
     snippet: r.snippet ?? '',
     desc_len: Number(r.desc_len ?? 0),
     min_years: r.min_years ?? null,
@@ -56,7 +71,8 @@ function mapSummary(r: Row): JobSummary {
 }
 
 const SUMMARY_COLS = `id, source, title, company, location, remote, url, posted_at, first_seen, salary,
-  employment_type, seniority, tags, state, score, left(description, 600) AS snippet, length(description) AS desc_len, min_years, max_years`;
+  employment_type, seniority, tags, state, score, worth, referral, score_profile,
+  (score_detail->>'win_pct')::real AS win_pct, score_detail->>'effort' AS effort, left(description, 600) AS snippet, length(description) AS desc_len, min_years, max_years`;
 
 export interface JobFilters {
   state?: string;
@@ -77,12 +93,15 @@ export interface JobFilters {
   /** With a years range: also keep postings that don't state a number. Defaults to true. */
   yearsUnstated?: boolean;
   unscored?: boolean;
-  sort?: 'newest' | 'score' | 'company';
+  /** Only jobs scored before the profile last changed. */
+  staleOnly?: boolean;
+  sort?: 'newest' | 'score' | 'worth' | 'company';
   limit?: number;
   offset?: number;
 }
 
 export async function listJobs(uid: string, f: JobFilters = {}): Promise<{ jobs: JobSummary[]; total: number }> {
+  const rev = await currentRev(uid);
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (sql: string, v: unknown) => {
@@ -98,6 +117,7 @@ export async function listJobs(uid: string, f: JobFilters = {}): Promise<{ jobs:
   if (f.source) add('source = ?', f.source);
   if (f.remote) where.push('remote = true');
   if (f.unscored) where.push('score IS NULL');
+  if (f.staleOnly) add('(score IS NOT NULL AND score_profile IS DISTINCT FROM ?)', rev);
   if (f.postedWithinDays) add(`COALESCE(posted_at, first_seen) > now() - (? || ' days')::interval`, String(f.postedWithinDays));
   if (f.firstSeenAfter) add('first_seen >= ?::timestamptz', f.firstSeenAfter);
   if (f.yearsMin != null || f.yearsMax != null) {
@@ -130,14 +150,16 @@ export async function listJobs(uid: string, f: JobFilters = {}): Promise<{ jobs:
   const order =
     f.sort === 'score'
       ? 'score DESC NULLS LAST, COALESCE(posted_at, first_seen) DESC'
-      : f.sort === 'company'
+      : f.sort === 'worth'
+        ? 'worth DESC NULLS LAST, score DESC NULLS LAST, COALESCE(posted_at, first_seen) DESC'
+        : f.sort === 'company'
         ? 'lower(company), COALESCE(posted_at, first_seen) DESC'
         : 'COALESCE(posted_at, first_seen) DESC';
   const limit = clamp(f.limit ?? 50, 1, 2000);
   const offset = Math.max(0, f.offset ?? 0);
   const rows = await q(`SELECT ${SUMMARY_COLS} FROM jobs ${w} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`, params);
   const cnt = await q(`SELECT count(*)::int AS n FROM jobs ${w}`, params);
-  return { jobs: rows.map(mapSummary), total: cnt[0]?.n ?? 0 };
+  return { jobs: rows.map((r) => mapSummary(r, rev)), total: cnt[0]?.n ?? 0 };
 }
 
 export interface JobFull extends JobSummary {
@@ -145,21 +167,23 @@ export interface JobFull extends JobSummary {
   apply_url: string | null;
   score_reasons: string[];
   score_flags: string[];
+  score_detail: ScoreDetail | null;
   notes: string;
   applications: { id: string; status: string }[];
 }
 
 export async function getJob(uid: string, id: string): Promise<JobFull | null> {
-  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, notes FROM jobs WHERE id = $1 AND user_id = $2`, [id, uid]);
+  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, score_detail, notes FROM jobs WHERE id = $1 AND user_id = $2`, [id, uid]);
   if (!rows.length) return null;
   const r = rows[0];
   const apps = await q('SELECT id, status FROM applications WHERE job_id = $1 AND user_id = $2 ORDER BY created_at DESC', [id, uid]);
   return {
-    ...mapSummary(r),
+    ...mapSummary(r, await currentRev(uid)),
     description: r.description ?? '',
     apply_url: r.apply_url ?? null,
     score_reasons: Array.isArray(r.score_reasons) ? r.score_reasons : [],
     score_flags: Array.isArray(r.score_flags) ? r.score_flags : [],
+    score_detail: r.score_detail?.v === 2 ? (r.score_detail as ScoreDetail) : null,
     notes: r.notes ?? '',
     applications: apps.map((a) => ({ id: a.id, status: a.status })),
   };
@@ -193,11 +217,13 @@ export async function saveScores(uid: string, scores: ScoreInput[]): Promise<{ s
     reasons: (s.reasons ?? []).slice(0, 6).map((x) => x.slice(0, 300)),
     flags: (s.flags ?? []).slice(0, 6).map((x) => x.slice(0, 300)),
   }));
+  // The older, plain-number format: no breakdown, so detail and worth are cleared.
   const rows = await q(
-    `UPDATE jobs SET score = x.score, score_reasons = x.reasons, score_flags = x.flags
+    `UPDATE jobs SET score = x.score, score_reasons = x.reasons, score_flags = x.flags,
+            score_detail = NULL, worth = NULL, scored_at = now(), score_profile = $3
      FROM jsonb_to_recordset($1::jsonb) AS x(job_id text, score int, reasons jsonb, flags jsonb)
      WHERE jobs.id = x.job_id AND jobs.user_id = $2 RETURNING jobs.id`,
-    [j(clean), uid],
+    [j(clean), uid, await currentRev(uid)],
   );
   const ok = new Set(rows.map((r) => r.id));
   return { saved: ok.size, unknown: clean.map((c) => c.job_id).filter((id) => !ok.has(id)) };

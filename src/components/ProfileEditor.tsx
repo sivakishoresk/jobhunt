@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Profile } from '@/lib/profile';
 import { TagInput, api, useToast } from './bits';
+import { profileYears } from '@/lib/fit';
 
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 
@@ -26,6 +27,7 @@ export function ProfileEditor() {
     setP((x) => (x ? fn(x) : x));
     setDirty(true);
   };
+  const pref = (patch: Partial<Profile['preferences']>) => change((x) => ({ ...x, preferences: { ...x.preferences, ...patch } }));
   const basics = (k: keyof Profile['basics'], v: string) => change((x) => ({ ...x, basics: { ...x.basics, [k]: v } }));
 
   async function save() {
@@ -77,6 +79,60 @@ export function ProfileEditor() {
         <h2>Job titles to search for</h2>
         <TagInput id="titles" values={p.jobTitles} onChange={(v) => change((x) => ({ ...x, jobTitles: v }))} placeholder="Machine Learning Engineer" max={5} />
         <p className="hint">Up to 5. When Claude fills in your profile from a resume it suggests titles that fit; edit them freely. They show up as one-click suggestions when you search for jobs.</p>
+      </section>
+
+      <section>
+        <h2>Scoring preferences</h2>
+        <p className="hint" style={{ maxWidth: '60ch' }}>
+          Used to judge fit, work authorisation, location and pay. None of this goes on a resume, but Claude can read it.
+        </p>
+        <div className="grid2">
+          <div>
+            <label className="field" htmlFor="pr-years">Years of experience to score with</label>
+            <input
+              id="pr-years"
+              type="number"
+              min={0}
+              max={40}
+              step={0.5}
+              value={p.preferences.yearsOverride ?? ''}
+              placeholder={`Counted from your dates: ${profileYears({ experience: p.experience })}`}
+              onChange={(e) => pref({ yearsOverride: e.target.value === '' ? null : Number(e.target.value) })}
+            />
+          </div>
+          <div>
+            <label className="field" htmlFor="pr-floor">Lowest pay worth taking</label>
+            <input id="pr-floor" type="text" value={p.preferences.salaryFloor} placeholder="INR 30 LPA, or USD 150k" onChange={(e) => pref({ salaryFloor: e.target.value })} />
+          </div>
+          <div>
+            <label className="field" htmlFor="pr-auth">Work authorisation</label>
+            <input id="pr-auth" type="text" value={p.preferences.workAuthorization} placeholder="India citizen; needs sponsorship for the US" onChange={(e) => pref({ workAuthorization: e.target.value })} />
+          </div>
+          <div>
+            <label className="field" htmlFor="pr-rate">Your callback rate, if you know it</label>
+            <input
+              id="pr-rate"
+              type="number"
+              min={0.5}
+              max={50}
+              step={0.5}
+              value={p.preferences.baseRate == null ? '' : p.preferences.baseRate * 100}
+              placeholder="Default 4 (%)"
+              onChange={(e) => pref({ baseRate: e.target.value === '' ? null : Number(e.target.value) / 100 })}
+            />
+          </div>
+        </div>
+        <label className="field" htmlFor="pr-loc">Locations that work for you</label>
+        <TagInput id="pr-loc" values={p.preferences.locations} onChange={(v) => pref({ locations: v })} placeholder="Bengaluru" max={10} />
+        <label className="check" style={{ marginTop: '0.6rem' }}>
+          <input type="checkbox" checked={p.preferences.remoteOk} onChange={(e) => pref({ remoteOk: e.target.checked })} /> Remote is fine
+        </label>
+        <label className="field" htmlFor="pr-block">Companies to skip</label>
+        <TagInput id="pr-block" values={p.preferences.blockedCompanies} onChange={(v) => pref({ blockedCompanies: v })} placeholder="Company name" max={50} />
+        <label className="field" htmlFor="pr-avoid">Kinds of role to avoid</label>
+        <TagInput id="pr-avoid" values={p.preferences.avoidRoles} onChange={(v) => pref({ avoidRoles: v })} placeholder="sales engineer" max={20} />
+        <label className="field" htmlFor="pr-pri">What you want from the next job</label>
+        <textarea id="pr-pri" rows={2} value={p.preferences.priorities} placeholder="Research-heavy post-training work with strong mentors" onChange={(e) => pref({ priorities: e.target.value })} />
       </section>
 
       <section>

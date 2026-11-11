@@ -627,3 +627,26 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em
   .g-flow li:not(:last-child)::after { width: 0.5rem; }
   .g-flow { gap: 0.4rem 0; }
 }
+
+/* ---- fit v2: chances and breakdown ---- */
+.chances { margin-top: 1.1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+.stat { display: grid; gap: 0.15rem; }
+.stat b { font-family: var(--display); font-weight: 750; font-size: 1.5rem; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 0.78rem; color: var(--ink-3); line-height: 1.25; }
+.chances .effort { margin: 0.8rem 0 0; font-size: 0.92rem; }
+.parts { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.35rem; }
+.parts li { display: grid; grid-template-columns: 5.5rem 1fr 2rem; align-items: center; gap: 0.6rem; font-size: 0.88rem; padding-left: 0; }
+.parts li::before { display: none; }
+.parts .bar { height: 8px; border: 1px solid var(--line-2, var(--line)); border-radius: 2px; overflow: hidden; background: var(--card); }
+.parts .bar i { display: block; height: 100%; background: var(--mark); }
+.parts .pc { text-align: right; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.reqs { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.25rem; }
+.reqs li { display: grid; grid-template-columns: 3.4rem 1fr auto; gap: 0.5rem; font-size: 0.88rem; padding-left: 0; }
+.reqs li::before { display: none; }
+.reqs .dots { letter-spacing: 0.1em; color: var(--good); font-size: 0.8rem; }
+.reqs .miss .dots, .reqs .miss { color: var(--flag); }
+.reqs .tier { color: var(--ink-3); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.stale-note { margin: 0 0 0.8rem; }
+.pill.stale-pill { border-style: dashed; }
+.rj-side .win { font-size: 0.75rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }

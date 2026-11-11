@@ -461,6 +461,73 @@ async function main() {
     return r.headers.get('set-cookie').split(';')[0];
   })();
   const web = (path, init = {}) => fetch(BASE + path, { ...init, headers: { cookie, 'content-type': 'application/json', ...(init.headers ?? {}) } });
+
+  console.log('\nFit scoring v2');
+  let v2Job;
+  const prefsReset = { workAuthorization: '', blockedCompanies: [], salaryFloor: '' };
+  await step('update_profile on basics keeps the contact details Claude cannot see', async () => {
+    const r = await call('update_profile', { basics: { headline: 'Changed headline' } });
+    ok(!r.isError, JSON.stringify(r.data));
+    const p = await (await web('/api/profile')).json();
+    eq([p.basics.email, p.basics.phone, p.basics.links.length, p.basics.name], ['asha@example.com', '+91 90000 00000', 1, 'Asha Rao']);
+    eq(p.basics.headline, 'Changed headline');
+    await call('update_profile', { basics: { headline: SAMPLE_PROFILE.basics.headline } });
+  });
+  await step('preferences are saved and merged field by field', async () => {
+    await call('update_profile', { preferences: { workAuthorization: 'India citizen; needs US sponsorship', blockedCompanies: ['Nope Corp'] } });
+    await call('update_profile', { preferences: { salaryFloor: 'INR 20 LPA' } });
+    const p = await (await web('/api/profile')).json();
+    eq([p.preferences.workAuthorization, p.preferences.blockedCompanies, p.preferences.salaryFloor, p.preferences.remoteOk], ['India citizen; needs US sponsorship', ['Nope Corp'], 'INR 20 LPA', true]);
+    ok(JSON.stringify((await call('get_profile')).data).includes('needs US sponsorship'), 'Claude can read preferences');
+  });
+  await step('jobs_to_score hands over the rubric and the years it will score with', async () => {
+    const r = (await call('jobs_to_score', { limit: 3 })).data;
+    ok(r.how_to_score.includes('assessments'), 'rubric missing');
+    eq(r.profile_years, 1.7);
+    ok(r.jobs.length > 0 && r.jobs.every((j) => j.score === undefined));
+    v2Job = r.jobs[0].id;
+  });
+  await step('score_jobs computes fit, callback chance and worth from assessments', async () => {
+    const s = await call('score_jobs', {
+      assessments: [
+        { job_id: v2Job, reqs: [{ skill: 'PyTorch', tier: 'core', evidence: 0.9 }, { skill: 'Kubernetes', tier: 'required', evidence: 0.9 }], min_years: 3, edge: 0.6, edge_basis: 'pub-1 ICLR poster', domain: 0.8, role: 0.85, location: 'same_country', reasons: ['Matches LLM work'], flags: ['Wants Kubernetes'] },
+        { job_id: 'j_missing', domain: 0.5, role: 0.5 },
+      ],
+    });
+    ok(!s.isError, JSON.stringify(s.data));
+    eq(s.data.saved, 1);
+    eq(s.data.unknown_job_ids, ['j_missing']);
+    const r0 = s.data.results[0];
+    ok(r0.fit > 0 && r0.fit <= 100 && r0.win_pct > 0 && r0.worth > 0, JSON.stringify(r0));
+    ok(r0.flags.some((f) => /Kubernetes/.test(f)), 'evidence the profile cannot back up should be flagged');
+    const g = (await call('get_job', { job_id: v2Job })).data;
+    eq([g.score, g.score_detail.v, g.score_detail.reqs[1].evidence, g.stale], [r0.fit, 2, 0.3, false]);
+    eq(g.score_detail.inputs.profile_years, 1.7);
+    const top = (await call('list_jobs', { sort: 'worth', limit: 1 })).data.jobs[0];
+    eq([top.id, top.effort !== undefined, top.win_pct > 0], [v2Job, true, true]);
+    eq((await call('score_jobs', {})).isError, true, 'neither format given');
+  });
+  await step('a referral raises the chance but not the fit', async () => {
+    const before = (await call('get_job', { job_id: v2Job })).data;
+    const r = await web(`/api/jobs/${v2Job}`, { method: 'PATCH', body: JSON.stringify({ referral: 0.8 }) });
+    eq(r.status, 200);
+    const after = (await call('get_job', { job_id: v2Job })).data;
+    ok(after.score_detail.win_pct > before.score_detail.win_pct * 2, `${before.score_detail.win_pct} -> ${after.score_detail.win_pct}`);
+    eq([after.referral, after.score, after.score_detail.stored.referral], [0.8, before.score, 0.8]);
+    eq((await web(`/api/jobs/${v2Job}`, { method: 'PATCH', body: JSON.stringify({ referral: 3 }) })).status, 400);
+  });
+  await step('changing the profile marks earlier scores as stale, and re-scoring clears it', async () => {
+    await call('update_profile', { preferences: { salaryFloor: 'INR 40 LPA' } });
+    const stale = (await call('list_jobs', { stale_only: true, limit: 100 })).data.jobs.map((j) => j.id);
+    ok(stale.includes(v2Job) && stale.includes(jobA), 'both the v2 and the older-format score are stale');
+    const toRescore = (await call('jobs_to_score', { stale_only: true, limit: 25 })).data;
+    ok(toRescore.jobs.some((j) => j.id === v2Job) && toRescore.stale_in_scope >= 2);
+    await call('score_jobs', { assessments: [{ job_id: v2Job, reqs: [{ skill: 'PyTorch', tier: 'core', evidence: 0.9 }], domain: 0.8, role: 0.85 }] });
+    ok(!(await call('get_job', { job_id: v2Job })).data.stale, 'fresh after re-scoring');
+    eq((await call('get_job', { job_id: v2Job })).data.referral, 0.8, 'referral survives a re-score');
+    await call('update_profile', { preferences: prefsReset });
+    ok(!(await call('get_job', { job_id: jobA })).data.stale, 'the older-format score is current again once the profile is back');
+  });
   await step('failing, missing, rental and slow actors are reported clearly', async () => {
     const cur = (await (await web('/api/sources')).json()).sources;
     const add = (id, actor) => ({ id, label: id, enabled: true, preset: 'custom', actor, input: { q: '{{keywords}}' }, maxResults: 5, localKeywordFilter: false });
@@ -718,8 +785,11 @@ async function main() {
 
   await client.close();
 
-  console.log('\nBrowser');
-  await browserTests(cookie, appId);
+  if (process.env.E2E_SKIP_BROWSER) console.log('\nBrowser tests skipped (E2E_SKIP_BROWSER)');
+  else {
+    console.log('\nBrowser');
+    await browserTests(cookie, appId);
+  }
 }
 
 async function browserTests(cookie, appId) {

@@ -41,6 +41,20 @@ export const BasicsSchema = z.object({
   links: z.array(z.object({ label: sd, url: s.min(1) })).default([]),
 });
 
+/** What the user wants and can do. Scoring reads it; none of it goes on a resume. */
+export const PreferencesSchema = z.object({
+  yearsOverride: z.number().min(0).max(40).nullable().default(null).describe('Years of relevant experience to score with. Leave null to count from the experience dates.'),
+  workAuthorization: sd.describe('Where you can work without sponsorship, e.g. "India citizen; needs sponsorship for the US".'),
+  locations: z.array(s.min(1)).max(10).default([]).describe('Cities or countries that work for you.'),
+  remoteOk: z.boolean().default(true),
+  salaryFloor: sd.describe('Lowest pay worth taking, in the currency you think in, e.g. "INR 30 LPA" or "USD 150k".'),
+  blockedCompanies: z.array(s.min(1)).max(50).default([]),
+  avoidRoles: z.array(s.min(1)).max(20).default([]).describe('Kinds of role you do not want, e.g. "sales engineer".'),
+  priorities: sd.describe('What you want from the next job, in a sentence or two. Used to judge growth and mission.'),
+  baseRate: z.number().min(0.005).max(0.5).nullable().default(null).describe('Your own callback rate once you know it (0.04 = 4 in 100 applications). Null uses the default.'),
+});
+export type Preferences = z.infer<typeof PreferencesSchema>;
+
 export const ProfileSchema = z.object({
   basics: BasicsSchema.default(() => BasicsSchema.parse({})),
   skills: z.array(s).default([]),
@@ -50,11 +64,37 @@ export const ProfileSchema = z.object({
   achievements: z.array(AchievementSchema).default([]),
   publications: z.array(PublicationSchema).default([]),
   jobTitles: z.array(s.min(1)).max(5).default([]),
+  preferences: PreferencesSchema.default(() => PreferencesSchema.parse({})),
 });
 export type Profile = z.infer<typeof ProfileSchema>;
 
+/**
+ * Update shapes for basics and preferences: every field optional and NO defaults. The MCP library fills in
+ * schema defaults before our code runs, so a defaulted schema would turn "headline only" into "everything blank".
+ */
+const BasicsPatchSchema = z.object({
+  name: s.optional(),
+  headline: s.optional(),
+  email: s.optional(),
+  phone: s.optional(),
+  location: s.optional(),
+  summary: s.optional(),
+  links: z.array(z.object({ label: sd, url: s.min(1) })).optional(),
+});
+const PreferencesPatchSchema = z.object({
+  yearsOverride: z.number().min(0).max(40).nullable().optional().describe('Years of relevant experience to score with. null counts from the experience dates.'),
+  workAuthorization: s.optional().describe('Where you can work without sponsorship, e.g. "India citizen; needs sponsorship for the US".'),
+  locations: z.array(s.min(1)).max(10).optional().describe('Cities or countries that work for you.'),
+  remoteOk: z.boolean().optional(),
+  salaryFloor: s.optional().describe('Lowest pay worth taking, e.g. "INR 30 LPA".'),
+  blockedCompanies: z.array(s.min(1)).max(50).optional(),
+  avoidRoles: z.array(s.min(1)).max(20).optional(),
+  priorities: s.optional().describe('What the user wants from the next job, in a sentence or two.'),
+  baseRate: z.number().min(0.005).max(0.5).nullable().optional().describe('Own callback rate, 0.04 = 4 in 100 applications. null uses the default.'),
+});
+
 export const ProfilePatchSchema = z.object({
-  basics: BasicsSchema.optional(),
+  basics: BasicsPatchSchema.optional().describe('Merged field by field: send only the fields that change.'),
   skills: z.array(s).optional(),
   experience: z.array(ExperienceSchema).optional(),
   projects: z.array(ProjectSchema).optional(),
@@ -62,6 +102,7 @@ export const ProfilePatchSchema = z.object({
   achievements: z.array(AchievementSchema).optional(),
   publications: z.array(PublicationSchema).optional(),
   jobTitles: z.array(s.min(1)).max(5).optional().describe('Up to 5 job titles that fit this profile, used to search for jobs.'),
+  preferences: PreferencesPatchSchema.optional().describe('Scoring preferences. Merged field by field: only the fields you send change.'),
 });
 
 const PREFIX = { experience: 'exp', projects: 'proj', education: 'edu', achievements: 'ach', publications: 'pub' } as const;
@@ -98,7 +139,13 @@ export async function getProfile(uid: string): Promise<Profile> {
 export async function saveProfile(uid: string, patch: unknown): Promise<Profile> {
   const p = ProfilePatchSchema.parse(patch);
   const current = await getProfile(uid);
-  const next = assignIds(ProfileSchema.parse({ ...current, ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) }));
+  const defined: Record<string, unknown> = Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined));
+  // basics and preferences merge field by field. Claude never sees email, phone or links, so a
+  // basics update from Claude must not blank them; fields that are not sent keep their saved value.
+  for (const k of ['basics', 'preferences'] as const) {
+    if (p[k]) defined[k] = { ...current[k], ...Object.fromEntries(Object.entries(p[k] as Record<string, unknown>).filter(([, v]) => v !== undefined)) };
+  }
+  const next = assignIds(ProfileSchema.parse({ ...current, ...defined }));
   await kvSet(ukey(uid, 'profile'), next);
   return next;
 }

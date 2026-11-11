@@ -6,9 +6,10 @@ import type { SearchView } from '@/lib/searches';
 import { Highlight, Meter, TagInput, api, timeAgo, tokens, useToast } from './bits';
 import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
 import { termsText } from '@/lib/terms';
+import { ScoreBreakdown } from './ScoreBreakdown';
 
 type Tab = 'inbox' | 'saved' | 'applied' | 'dismissed' | 'all';
-type Sort = 'newest' | 'score' | 'company';
+type Sort = 'newest' | 'score' | 'worth' | 'company';
 const TAB_STATE: Record<Exclude<Tab, 'all'>, JobState> = { inbox: 'new', saved: 'saved', applied: 'applied', dismissed: 'dismissed' };
 const TAB_LABEL: Record<Tab, string> = { inbox: 'Inbox', saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed', all: 'All' };
 
@@ -55,6 +56,7 @@ export function Workbench() {
   const [remoteOnly, setRemoteOnly] = useState(false);
   const [salaryOnly, setSalaryOnly] = useState(false);
   const [unscored, setUnscored] = useState(false);
+  const [staleOnly, setStaleOnly] = useState(false);
   const [yrsFrom, setYrsFrom] = useState('');
   const [yrsTo, setYrsTo] = useState('');
   const [yrsUnstated, setYrsUnstated] = useState(true);
@@ -286,6 +288,7 @@ export function Workbench() {
       if (srcFilter.size && !srcFilter.has(j.source)) return false;
       if (minScore && (j.score ?? -1) < minScore) return false;
       if (unscored && j.score != null) return false;
+      if (staleOnly && !j.stale) return false;
       if (remoteOnly && !j.remote) return false;
       if (salaryOnly && !j.salary) return false;
       if (cutoff && new Date(j.posted_at ?? j.first_seen ?? 0).getTime() < cutoff) return false;
@@ -299,14 +302,16 @@ export function Workbench() {
     out.sort((a, b) =>
       sort === 'score'
         ? (b.score ?? -1) - (a.score ?? -1) || when(b) - when(a)
-        : sort === 'company'
+        : sort === 'worth'
+          ? (b.worth ?? -1) - (a.worth ?? -1) || (b.score ?? -1) - (a.score ?? -1) || when(b) - when(a)
+          : sort === 'company'
           ? a.company.localeCompare(b.company) || when(b) - when(a)
           : when(b) - when(a),
     );
     return out;
-  }, [scoped, attr, roleSel, placeSel, levelSel, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, yrsFrom, yrsTo, yrsUnstated, sort]);
+  }, [scoped, attr, roleSel, placeSel, levelSel, tab, text, srcFilter, minScore, within, remoteOnly, salaryOnly, unscored, staleOnly, yrsFrom, yrsTo, yrsUnstated, sort]);
 
-  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored || yrsFrom !== '' || yrsTo !== '' || roleSel.size > 0 || placeSel.size > 0 || levelSel.size > 0);
+  const filtersActive = !!(text || srcFilter.size || minScore || within || remoteOnly || salaryOnly || unscored || staleOnly || yrsFrom !== '' || yrsTo !== '' || roleSel.size > 0 || placeSel.size > 0 || levelSel.size > 0);
   function resetFilters() {
     setText('');
     setSrcFilter(new Set());
@@ -315,6 +320,7 @@ export function Workbench() {
     setRemoteOnly(false);
     setSalaryOnly(false);
     setUnscored(false);
+    setStaleOnly(false);
     setYrsFrom('');
     setYrsTo('');
     setYrsUnstated(true);
@@ -374,6 +380,17 @@ export function Workbench() {
     } catch (e) {
       setJobs((js) => js.map((j) => (j.id === id ? { ...j, state: prev } : j)));
       show(e instanceof Error ? e.message : 'Could not update the job.');
+    }
+  }
+  async function setReferral(id: string, referral: number) {
+    try {
+      await api(`/api/jobs/${id}`, { method: 'PATCH', json: { referral } });
+      const d = await api<JobFull>(`/api/jobs/${id}`);
+      cache.current.set(id, d);
+      setDetail(d);
+      setJobs((js) => js.map((j) => (j.id === id ? { ...j, referral: d.referral, win_pct: d.win_pct, worth: d.worth, effort: d.effort } : j)));
+    } catch (e) {
+      show(e instanceof Error ? e.message : 'Could not save the referral.');
     }
   }
   function revert(id: string, prev: JobState) {
@@ -473,6 +490,7 @@ export function Workbench() {
   if (remoteOnly) activeChips.push({ key: 're', label: 'Remote only', clear: () => setRemoteOnly(false) });
   if (salaryOnly) activeChips.push({ key: 'sa', label: 'Shows a salary', clear: () => setSalaryOnly(false) });
   if (unscored) activeChips.push({ key: 'un', label: 'Not scored yet', clear: () => setUnscored(false) });
+  if (staleOnly) activeChips.push({ key: 'st', label: 'Score out of date', clear: () => setStaleOnly(false) });
 
   const verdict = (n: number) => (n >= 80 ? 'Strong fit' : n >= 70 ? 'Good fit' : n >= 50 ? 'Possible fit' : 'Weak fit');
   const srcLabel = (id: string) => sources.find((s) => s.id === id)?.label ?? id;
@@ -615,6 +633,7 @@ export function Workbench() {
             <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
               <option value="newest">Newest</option>
               <option value="score">Best fit</option>
+              <option value="worth">Best odds</option>
               <option value="company">Company</option>
             </select>
             <button className="btn" onClick={() => setAdding(true)}>
@@ -769,6 +788,9 @@ export function Workbench() {
                     <label className="check">
                       <input type="checkbox" checked={unscored} onChange={(e) => setUnscored(e.target.checked)} /> Not scored yet
                     </label>
+                    <label className="check">
+                      <input type="checkbox" checked={staleOnly} onChange={(e) => setStaleOnly(e.target.checked)} /> Score out of date
+                    </label>
                   </div>
                 </div>
                 <div className="fpop-foot">
@@ -851,6 +873,8 @@ export function Workbench() {
                       {j.remote && <span className="pill">Remote</span>}
                       {j.salary && <span className="pill">{j.salary}</span>}
                       {j.seniority && <span className="pill">{j.seniority}</span>}
+                      {j.stale && <span className="pill stale-pill" title="Scored before your profile last changed">Score outdated</span>}
+                      {j.effort === 'A' && <span className="pill">Worth a referral</span>}
                       {j.state === 'saved' && <span className="pill">Saved</span>}
                       {j.state === 'applied' && <span className="pill">Applied</span>}
                     </span>
@@ -858,6 +882,7 @@ export function Workbench() {
                   <span className="rj-side">
                     <span>{timeAgo(j.posted_at ?? j.first_seen)}</span>
                     {j.score != null ? <b>{j.score}</b> : <span className="src-mark">{srcLabel(j.source)}</span>}
+                    {j.win_pct != null && <span className="win" title="Estimated callback chance">~{j.win_pct}%</span>}
                   </span>
                 </button>
               );
@@ -929,6 +954,11 @@ export function Workbench() {
                   <div className="ruler" aria-hidden>
                     <i style={{ width: `${Math.max(3, detail.score)}%` }} />
                   </div>
+                  <ScoreBreakdown
+                    job={detail}
+                    onReferral={(v) => setReferral(detail.id, v)}
+                    rescoreHref={claudeLink(`Using my Jobhunt connector, read my profile and re-score job ${selected.id} (${selected.title} at ${selected.company}) with score_jobs assessments.`)}
+                  />
                   {detail.score_reasons.length > 0 && (
                     <ul>
                       {detail.score_reasons.map((r, i) => (

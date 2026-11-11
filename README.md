@@ -109,11 +109,23 @@ npm run dev
 
 With no `DATABASE_URL`, an embedded Postgres (PGlite) stores data in `.data/`. Claude can't reach `localhost`; use a tunnel such as Cloudflare Tunnel if you want to test the connector locally.
 
+## Fit scores
+
+Claude does not pick a 0-100 number. For each job it sends structured judgments through `score_jobs` (the requirements, how well your profile proves each, years asked, domain and role match, seniority, location, visa, and how much you would want the job). The server computes:
+
+- **Fit** (0-100): a weighted geometric mean of skills (average coverage and the weakest core requirement), years (a strong paper or shipped project can offset up to 2 years of the ask) and domain/role match.
+- **Callback chance**: fit adjusted for competition (applicants, posting age), a referral, visa and location gates, and your callback rate (default 4%).
+- **Worth**: callback chance times how much you would want the job, using the cautious end of the fit range. Sort by **Best odds** to rank on it.
+- **Effort**: skip, C (quick apply), B (tailored resume) or A (referral and full tailoring).
+
+Set your years override, work authorisation, locations, salary floor, blocked companies and callback rate under **Scoring preferences** on the Profile page. When the profile changes, older scores show **Score outdated**; ask Claude to re-score with `jobs_to_score` and `stale_only`. Set a referral (0-1) on a job and its chance and worth update at once. Claude's evidence for a skill the profile never mentions is capped and flagged. The old `scores` format is still accepted but carries no breakdown.
+
 ## Tests
 
 ```
+npm run test:unit   # scoring model and years parsing, no server needed
 npm run build
-npm run test:e2e
+npm run test:e2e      # set E2E_SKIP_BROWSER=1 to skip the Playwright part
 ```
 
 This starts a mock Apify server and the built app, then checks the OAuth flow, all 16 tools, search, drafts, DOCX export, two accounts that cannot see each other's data, password change and reset, and the browser UI with Playwright (screenshots go to `test-output/`).

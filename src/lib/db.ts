@@ -63,6 +63,12 @@ const SCHEMA: string[] = [
      last_seen timestamptz NOT NULL DEFAULT now(),
      notes text NOT NULL DEFAULT ''
    )`,
+  // Fit scoring v2: the full breakdown, a sortable "worth" figure, and the profile revision a score was made against.
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_detail jsonb`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS worth real`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS scored_at timestamptz`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_profile text`,
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS referral real NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS min_years int`,
   `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS max_years int`,
   `CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs(state)`,

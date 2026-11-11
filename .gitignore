@@ -8,3 +8,4 @@ next-env.d.ts
 test-output
 .vercel
 .env*
+Claude outputs/ # or delete that folder
