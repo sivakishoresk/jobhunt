@@ -1059,7 +1059,7 @@ export function Workbench() {
                 </a>
               )}
             </div>
-            <div className="cta">
+            <div className="cta" role="group" aria-label="Draft with Claude">
               <a
                 className="btn primary"
                 target="_blank"
@@ -1068,9 +1068,28 @@ export function Workbench() {
                   `Using my Jobhunt connector: read my profile and job ${selected.id} (${selected.title} at ${selected.company}), write a tailored resume and cover letter using only facts from my profile, check the draft, and save it as an application. List any gaps.`,
                 )}
               >
-                Draft with Claude
+                Draft resume and cover letter
+              </a>
+              <a
+                className="btn"
+                target="_blank"
+                rel="noopener noreferrer"
+                href={claudeLink(
+                  `Using my Jobhunt connector: read my profile and job ${selected.id} (${selected.title} at ${selected.company}), then write LinkedIn messages for it and save them with save_outreach: a connection note, a message to the recruiter or hiring manager, and a referral ask. Straight to the point, one ask each, only facts from my profile.`,
+                )}
+              >
+                Draft LinkedIn message
               </a>
             </div>
+            {detail && detail.applications.length > 0 && (
+              <p className="drafts-link">
+                {detail.applications.map((a) => (
+                  <Link key={a.id} href={`/applications/${a.id}`} className="btn small">
+                    Open drafts · {a.status}
+                  </Link>
+                ))}
+              </p>
+            )}
 
             <div className="fit">
               {detail?.score != null ? (
@@ -1161,16 +1180,6 @@ export function Workbench() {
               </div>
             </dl>
 
-            {detail && detail.applications.length > 0 && (
-              <p style={{ marginTop: '1.2rem' }}>
-                {detail.applications.map((a) => (
-                  <Link key={a.id} href={`/applications/${a.id}`} className="btn small" style={{ marginRight: 6 }}>
-                    Application · {a.status}
-                  </Link>
-                ))}
-              </p>
-            )}
-
             {detail && (
               <OutreachPanel
                 key={detail.id}
@@ -1178,9 +1187,8 @@ export function Workbench() {
                 title={detail.title}
                 company={detail.company}
                 initial={detail.outreach}
-                onSaved={(o) => {
-                  const cur = cache.current.get(detail.id);
-                  if (cur) cache.current.set(detail.id, { ...cur, outreach: o });
+                onSaved={() => {
+                  cache.current.delete(detail.id); // saving also files the drafts under Applications
                 }}
               />
             )}

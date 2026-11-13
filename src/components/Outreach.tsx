@@ -15,13 +15,13 @@ const claudeLink = (prompt: string) => `https://claude.ai/new?q=${encodeURICompo
 
 /** LinkedIn messages for one job: edit, see the length LinkedIn allows, copy. Nothing is sent from here. */
 export function OutreachPanel({
-  jobId, title, company, initial, onSaved,
+  jobId, title, company, initial, onSaved, startOpen = false,
 }: {
-  jobId: string; title: string; company: string; initial: Outreach; onSaved?: (o: Outreach) => void;
+  jobId: string; title: string; company: string; initial: Outreach; onSaved?: (o: Outreach) => void; startOpen?: boolean;
 }) {
   const [o, setO] = useState<Outreach>(initial);
   const [saved, setSaved] = useState<Outreach>(initial);
-  const [open, setOpen] = useState(hasOutreach(initial));
+  const [open, setOpen] = useState(startOpen || hasOutreach(initial));
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [copied, setCopied] = useState<OutreachKind | null>(null);
@@ -125,7 +125,7 @@ export function OutreachPanel({
 }
 
 /** The same panel for places that only know the job id (the application editor). */
-export function OutreachForJob({ jobId, title, company }: { jobId: string; title: string; company: string }) {
+export function OutreachForJob({ jobId, title, company, onSaved }: { jobId: string; title: string; company: string; onSaved?: (o: Outreach) => void }) {
   const [initial, setInitial] = useState<Outreach | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -135,5 +135,5 @@ export function OutreachForJob({ jobId, title, company }: { jobId: string; title
   }, [jobId]);
   if (error) return <p className="err">{error}</p>;
   if (!initial) return <p className="hint">Loading…</p>;
-  return <OutreachPanel jobId={jobId} title={title} company={company} initial={initial} />;
+  return <OutreachPanel jobId={jobId} title={title} company={company} initial={initial} onSaved={onSaved} startOpen />;
 }

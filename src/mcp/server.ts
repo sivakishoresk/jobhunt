@@ -13,6 +13,7 @@ import { AssessmentSchema, RUBRIC, profileYears } from '@/lib/fit';
 import { saveAssessments } from '@/lib/scoring';
 import {
   APP_STATUSES,
+  ensureApplication,
   getApplication,
   listApplications,
   saveApplicationDraft,
@@ -94,7 +95,7 @@ async function searchReport(uid: string, sv: SearchView, includeJobs = true) {
 }
 
 export function createMcpServer(base: string, uid: string): McpServer {
-  const server = new McpServer({ name: 'jobhunt', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'jobhunt', version: '0.2.0' }, { instructions: INSTRUCTIONS });
 
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -594,10 +595,12 @@ export function createMcpServer(base: string, uid: string): McpServer {
         if (!hasOutreach(outreachOf(text))) return fail('Send at least one of connect_note, message or referral_ask.');
         const o = mergeOutreach(profile, job, job.outreach, text);
         await setOutreach(uid, job.id, o);
+        const applicationId = await ensureApplication(uid, job);
         return ok({
           saved: true,
           job_id: job.id,
-          review_at: `${base}/?job=${encodeURIComponent(job.id)}`,
+          application_id: applicationId,
+          review_at: `${base}/applications/${applicationId}?doc=linkedin`,
           lengths: { connect_note: [...o.connect_note.trim()].length, message: [...o.message.trim()].length, referral_ask: [...o.referral_ask.trim()].length },
           limits: { connect_note: CONNECT_FREE, message: MESSAGE_AIM, referral_ask: MESSAGE_AIM },
           warnings: o.checks,
@@ -612,7 +615,7 @@ export function createMcpServer(base: string, uid: string): McpServer {
     'list_applications',
     {
       title: 'List applications',
-      description: 'Lists applications with their status (draft, sent, interview, offer, rejected, withdrawn).',
+      description: 'Lists applications with their status (draft, sent, interview, offer, rejected, withdrawn) and which pieces are drafted for each: has_resume, has_cover, has_linkedin.',
       inputSchema: { status: z.enum(APP_STATUSES).optional() },
       annotations: readOnly,
     },

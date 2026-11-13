@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { withUser, bodyJson } from '@/lib/http';
 import { getJob, setJobState, setJobNotes, setOutreach, JOB_STATES } from '@/lib/jobs';
 import { getProfile } from '@/lib/profile';
-import { OutreachInputSchema, mergeOutreach } from '@/lib/outreach';
+import { OutreachInputSchema, mergeOutreach, hasOutreach } from '@/lib/outreach';
+import { ensureApplication } from '@/lib/applications';
 import { setReferral } from '@/lib/scoring';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +31,9 @@ export async function PATCH(req: Request, { params }: Ctx) {
       // Re-checked on every save, so fixing a line clears its warning.
       const outreach = mergeOutreach(await getProfile(me.uid), job, job.outreach, p.outreach);
       await setOutreach(me.uid, id, outreach);
-      return Response.json({ ok: true, outreach });
+      // Drafted messages show up on the Applications page next to the resume and cover letter.
+      const application_id = hasOutreach(outreach) ? await ensureApplication(me.uid, job) : null;
+      return Response.json({ ok: true, outreach, application_id });
     }
     return Response.json({ ok: true });
   });

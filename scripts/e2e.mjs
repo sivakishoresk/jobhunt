@@ -835,6 +835,24 @@ async function main() {
     eq([saved.referral_ask, saved.connect_note.startsWith('Hi [Name]'), saved.checks.length], ['Would you be open to referring me?', true, 0]);
     ok((await call('save_outreach', { job_id: jid })).isError, 'nothing to save is an error');
   });
+  await step('LinkedIn messages alone still get a place under Applications, later filled by the resume', async () => {
+    const job = jobs[6];
+    eq((await call('get_job', { job_id: job.id })).data.applications.length, 0, 'this job starts with no application');
+    const r = (await call('save_outreach', { job_id: job.id, message: 'Hi [Name], I applied for this role. Are you the right person to ask about it?' })).data;
+    ok(r.application_id && r.review_at.endsWith(`/applications/${r.application_id}?doc=linkedin`), JSON.stringify(r));
+    const row = (await call('list_applications')).data.applications.find((a) => a.id === r.application_id);
+    eq([row.has_resume, row.has_cover, row.has_linkedin, row.status], [false, false, true, 'draft']);
+    const web = await (await fetch(`${BASE}/api/applications/${r.application_id}`, { headers: { cookie } })).json();
+    eq([web.resume.experience, web.resume.skills, web.has_linkedin], [[], [], true], 'an empty resume reads as empty lists');
+    eq((await fetch(`${BASE}/api/applications/${r.application_id}/docx?doc=resume`, { headers: { cookie } })).status, 200);
+    const again = (await call('save_outreach', { job_id: job.id, connect_note: 'Hi [Name], I applied for this role. Glad to connect.' })).data;
+    eq(again.application_id, r.application_id, 'no second application for the same job');
+    const p = (await call('get_profile')).data;
+    const d = (await call('save_application', { job_id: job.id, experience: [{ profile_id: p.experience[0].id }], cover_letter: 'Dear team,\n\nI would like to apply.\n\nAsha' })).data;
+    eq([d.application_id, d.updated_existing_draft], [r.application_id, true], 'the resume fills the same application');
+    const filled = (await call('list_applications')).data.applications.find((a) => a.id === r.application_id);
+    eq([filled.has_resume, filled.has_cover, filled.has_linkedin], [true, true, true]);
+  });
   await step('a draft can order and rename resume sections and carry LinkedIn messages', async () => {
     const p = (await call('get_profile')).data;
     const r = (await call('save_application', {
@@ -1095,9 +1113,17 @@ async function browserTests(cookie, appId) {
     const item = page.locator('.item').first();
     await item.dragTo(page.locator('.col', { hasText: 'Interview' }));
     await page.waitForFunction(() => document.querySelector('.col:nth-child(3) .item'));
+    ok((await page.locator('.item a.piece', { hasText: 'LinkedIn' }).count()) >= 1, 'a card links straight to its LinkedIn messages');
   });
   await step('the editor renders the resume sheet and edits a bullet', async () => {
     await page.goto(`${BASE}/applications/${appId}`);
+    await page.waitForSelector('.piece-box');
+    eq(await page.locator('.piece-box').count(), 3, 'resume, cover letter and LinkedIn message each get a box');
+    await shot('07a-drafts');
+    await page.locator('.piece-box', { hasText: 'LinkedIn message' }).locator('.piece-open').click();
+    await page.waitForSelector('.outreach textarea');
+    await page.click('button:has-text("All drafts for this job")');
+    await page.locator('.piece-box', { hasText: 'Resume' }).locator('.piece-open').click();
     await page.waitForSelector('.sheet h1');
     ok((await page.locator('.sheet').innerText()).includes('Fabrikam Research'));
     ok((await page.locator('.sheet strong', { hasText: '14B' }).count()) === 1, 'bold bullet should render');

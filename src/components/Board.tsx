@@ -13,6 +13,12 @@ const COLS: { id: AppStatus; label: string }[] = [
   { id: 'withdrawn', label: 'Withdrawn' },
 ];
 
+const PIECES = [
+  { doc: 'resume', label: 'Resume', has: 'has_resume' },
+  { doc: 'cover', label: 'Cover letter', has: 'has_cover' },
+  { doc: 'linkedin', label: 'LinkedIn', has: 'has_linkedin' },
+] as const;
+
 export function Board() {
   const [apps, setApps] = useState<AppSummary[] | null>(null);
   const [over, setOver] = useState<AppStatus | null>(null);
@@ -71,22 +77,37 @@ export function Board() {
                 {c.label} <span className="hint">{items.length}</span>
               </h3>
               {items.map((a) => (
-                <Link key={a.id} href={`/applications/${a.id}`} className="item" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', a.id)}>
-                  <b>{a.company}</b>
-                  <small>{a.title}</small>
-                  <small> · {timeAgo(a.updated_at)} ago</small>
+                <div key={a.id} className="item" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', a.id)}>
+                  <Link href={`/applications/${a.id}`} className="item-main" draggable={false}>
+                    <b>{a.company}</b>
+                    <small>{a.title}</small>
+                    <small> · {timeAgo(a.updated_at)} ago</small>
+                  </Link>
+                  <div className="pieces" aria-label="Drafts">
+                    {PIECES.map((x) =>
+                      a[x.has] ? (
+                        <Link key={x.doc} href={`/applications/${a.id}?doc=${x.doc}`} className="piece" draggable={false}>
+                          {x.label}
+                        </Link>
+                      ) : (
+                        <span key={x.doc} className="piece none" title={`${x.label}: not drafted yet`}>
+                          {x.label}
+                        </span>
+                      ),
+                    )}
+                  </div>
                   {a.warnings > 0 && (
                     <div className="warn">
                       {a.warnings} to check
                     </div>
                   )}
-                </Link>
+                </div>
               ))}
             </section>
           );
         })}
       </div>
-      <p className="hint" style={{ padding: '0 1rem' }}>Drag an application to another column to change its status.</p>
+      <p className="hint" style={{ padding: '0 1rem' }}>Each card lists what is drafted for that job; click one to open it. Drag a card to another column to change its status.</p>
       {node}
     </>
   );

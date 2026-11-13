@@ -304,7 +304,8 @@ kbd {
 .state-badge { display: inline-block; font-size: 0.76rem; font-weight: 700; padding: 0.05rem 0.55rem; border-radius: 99px; background: var(--ink); color: var(--bg); margin-bottom: 0.7rem; }
 .state-badge.saved { background: var(--mark); color: var(--mark-ink); }
 .detail .actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 1.3rem 0 0; }
-.detail .cta { margin: 0.6rem 0 0; }
+.detail .cta { margin: 0.6rem 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.5rem; }
+.drafts-link { margin: 0.6rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .detail .cta .btn { width: 100%; padding: 0.75rem 1rem; font-size: 1rem; font-family: var(--display); font-weight: 650; letter-spacing: -0.01em; }
 .fit { margin: 1.5rem 0 0; padding: 1.1rem 1.2rem 1.2rem; border-radius: var(--r-lg); background: var(--bg); border: 1px solid var(--line); }
 .fit-top { display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; }
@@ -698,3 +699,24 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em
 .outreach-check { margin: 0.35rem 0 0; padding: 0.3rem 0.6rem; border-left: 3px solid var(--flag); background: var(--card); font-size: 0.86rem; color: var(--ink-2); overflow-wrap: anywhere; }
 .outreach-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.9rem; }
 .hidden-note { margin: 0.6rem 0 0; font-size: 0.86rem; color: var(--ink-2); }
+
+/* ---- drafts of one application: boxes on its page, links on its board card ---- */
+.item-main { display: block; color: inherit; text-decoration: none; }
+.pieces { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; }
+.piece { font-size: 0.76rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 99px; border: 1px solid var(--teal); color: var(--teal); background: var(--card); text-decoration: none; white-space: nowrap; }
+a.piece:hover { background: var(--teal); color: var(--on-teal); }
+.piece.none { border: 1px dashed var(--line-2); color: var(--ink-3); font-weight: 500; }
+.piece-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.9rem; margin: 1.4rem 0 0.6rem; }
+.piece-box { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.1rem; border: 1px solid var(--line-2); border-radius: var(--r-lg); background: var(--card); box-shadow: var(--shadow); }
+.piece-box.empty { border-style: dashed; box-shadow: none; background: var(--surface); }
+.piece-open { display: grid; gap: 0.35rem; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; flex: 1; align-content: start; }
+.piece-open[disabled] { cursor: default; }
+.piece-title { font-family: var(--display); font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; }
+.piece-state { font-size: 0.8rem; font-weight: 700; color: var(--ink-3); }
+.piece-state.done { color: var(--good); }
+.piece-detail { font-size: 0.9rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.piece-open .warn { color: var(--flag); font-weight: 700; font-size: 0.82rem; }
+.piece-go { font-weight: 600; color: var(--teal); margin-top: 0.2rem; }
+.piece-open:hover .piece-go { text-decoration: underline; }
+.piece-redraft { font-size: 0.84rem; color: var(--ink-2); }
+.piece-box .btn.small { align-self: flex-start; }
