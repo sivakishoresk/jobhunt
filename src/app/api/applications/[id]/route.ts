@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { withUser, bodyJson } from '@/lib/http';
 import { APP_STATUSES, deleteApplication, getApplication, updateApplication } from '@/lib/applications';
+import { SECTION_KEYS } from '@/lib/layout';
 
 export const dynamic = 'force-dynamic';
 type Ctx = { params: Promise<{ id: string }> };
@@ -23,6 +24,7 @@ const Resume = z.object({
   education: z.array(z.object({ degree: z.string(), school: z.string(), start: z.string(), end: z.string(), detail: z.string() })),
   achievements: z.array(z.string()).default([]),
   publications: z.array(z.string()),
+  layout: z.array(z.object({ key: z.enum(SECTION_KEYS), title: z.string().max(40) })).optional(),
 });
 
 const Patch = z.object({

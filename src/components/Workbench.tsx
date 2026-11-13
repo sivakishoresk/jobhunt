@@ -7,6 +7,8 @@ import { Highlight, Meter, TagInput, api, timeAgo, tokens, useToast } from './bi
 import { yearsLabel, LINKEDIN_LEVELS } from '@/lib/experience';
 import { termsText } from '@/lib/terms';
 import { ScoreBreakdown } from './ScoreBreakdown';
+import { OutreachPanel } from './Outreach';
+import { hideRules, hiddenReason, type HideRules } from '@/lib/target';
 
 type Tab = 'inbox' | 'saved' | 'applied' | 'dismissed' | 'all';
 type Sort = 'newest' | 'score' | 'worth' | 'company';
@@ -87,6 +89,10 @@ export function Workbench() {
   const [newOpen, setNewOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [help, setHelp] = useState(false);
+  // Listings your own preferences rule out (roles to avoid, companies to skip) stay out of the way unless asked for.
+  const [rules, setRules] = useState<HideRules>({ avoid: null, blocked: [] });
+  const [showHidden, setShowHidden] = useState(false);
+  const wantJob = useRef<string | null>(null); // a job opened by link (?job=...)
   const { show, node: toastNode } = useToast();
   const filterRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<{ id: string; prev: JobState } | null>(null);
@@ -235,7 +241,13 @@ export function Workbench() {
     loadJobs();
     loadSearches().then((list) => {
       const stored = ls('jh.scope');
-      const want = stored === 'all' ? 'all' : list.find((x) => x.id === stored)?.id ?? list.find((x) => x.jobs > 0)?.id ?? 'all';
+      const linked = new URLSearchParams(window.location.search).get('job');
+      if (linked) {
+        wantJob.current = linked;
+        setTab('all');
+        setShowHidden(true);
+      }
+      const want = linked || stored === 'all' ? 'all' : list.find((x) => x.id === stored)?.id ?? list.find((x) => x.jobs > 0)?.id ?? 'all';
       selectScope(want).finally(() => setScopeReady(true));
     });
     try {
@@ -250,8 +262,9 @@ export function Workbench() {
         setApifyOk(r.apifyTokenSet);
       })
       .catch(() => {});
-    api<{ basics: { location: string; headline: string }; jobTitles?: string[] }>('/api/profile')
+    api<{ basics: { location: string; headline: string }; jobTitles?: string[]; preferences?: { avoidRoles?: string[]; blockedCompanies?: string[] } }>('/api/profile')
       .then((p) => {
+        setRules(hideRules(p.preferences));
         if (!ls('jh.loc2') && p.basics.location) setLoc([p.basics.location]);
         setTitleIdeas(p.jobTitles ?? []);
       })
@@ -312,12 +325,19 @@ export function Workbench() {
 
   // ---------- derived list ----------
   const scopeSearch = useMemo(() => pastSearches.find((x) => x.id === scopeId) ?? null, [pastSearches, scopeId]);
-  const scoped = useMemo(() => {
+  const scopedAll = useMemo(() => {
     if (scopeLoading) return [];
     if (!scopeIds) return jobs;
     const since = newOnly ? scopeSearch?.created_at ?? null : null;
     return jobs.filter((j) => scopeIds.has(j.id) && (!since || (j.first_seen != null && j.first_seen >= since)));
   }, [jobs, scopeIds, newOnly, scopeSearch, scopeLoading]);
+  // Only untouched listings are hidden: something you saved or applied to stays visible whatever its title.
+  const ruledOut = useMemo(() => scopedAll.filter((j) => j.state === 'new' && hiddenReason(j, rules)), [scopedAll, rules]);
+  const scoped = useMemo(() => {
+    if (showHidden || !ruledOut.length) return scopedAll;
+    const out = new Set(ruledOut.map((j) => j.id));
+    return scopedAll.filter((j) => !out.has(j.id));
+  }, [scopedAll, ruledOut, showHidden]);
   // Chip options for the role / place / level filters, counted over the jobs in this view.
   const facets = useMemo(() => {
     const live = scoped.filter((j) => j.state !== 'dismissed');
@@ -334,7 +354,7 @@ export function Workbench() {
     for (const j of live) levelN.set(j.seniority ?? '', (levelN.get(j.seniority ?? '') ?? 0) + 1);
     return { roleN, placeN, levelN };
   }, [scoped, attr]);
-  const terms = useMemo(() => [...new Set([...tokens(text), ...tokens(lastKeywords.current)])], [text, search]);
+  const terms = useMemo(() => [...new Set([...tokens(text).filter((x) => !x.startsWith('-')), ...tokens(lastKeywords.current)])], [text, search]);
   const tabCounts = useMemo(() => {
     const c: Record<Tab, number> = { inbox: 0, saved: 0, applied: 0, dismissed: 0, all: 0 };
     for (const j of scoped) {
@@ -349,7 +369,10 @@ export function Workbench() {
   const sourceIds = useMemo(() => [...new Set(jobs.map((j) => j.source))], [jobs]);
 
   const visible = useMemo(() => {
-    const t = tokens(text);
+    // "-word" leaves out listings that contain the word
+    const typed = tokens(text);
+    const t = typed.filter((x) => !x.startsWith('-'));
+    const not = typed.filter((x) => x.startsWith('-') && x.length > 2).map((x) => x.slice(1));
     const cutoff = within ? Date.now() - within * 86400e3 : 0;
     const lo = yrsFrom === '' ? null : Number(yrsFrom);
     const hi = yrsTo === '' ? null : Number(yrsTo);
@@ -373,9 +396,10 @@ export function Workbench() {
       if (remoteOnly && !j.remote) return false;
       if (salaryOnly && !j.salary) return false;
       if (cutoff && new Date(j.posted_at ?? j.first_seen ?? 0).getTime() < cutoff) return false;
-      if (t.length) {
+      if (t.length || not.length) {
         const hay = `${j.title} ${j.company} ${j.location} ${j.tags.join(' ')} ${j.snippet}`.toLowerCase();
         if (!t.every((x) => hay.includes(x))) return false;
+        if (not.some((x) => `${j.title} ${j.company}`.toLowerCase().includes(x))) return false;
       }
       return true;
     });
@@ -412,6 +436,15 @@ export function Workbench() {
 
   // keep a valid selection
   useEffect(() => {
+    if (wantJob.current && visible.some((j) => j.id === wantJob.current)) {
+      const id = wantJob.current;
+      wantJob.current = null;
+      setSelectedId(id);
+      setDetailOpen(true);
+      setTimeout(() => document.getElementById(`job-${id}`)?.scrollIntoView({ block: 'center' }), 0);
+      return;
+    }
+    if (wantJob.current && !loaded) return;
     if (!visible.length) {
       setSelectedId(null);
       return;
@@ -704,7 +737,7 @@ export function Workbench() {
                 type="search"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Filter by title, company or skill"
+                placeholder="Filter by title, company or skill. -word leaves it out"
                 aria-label="Filter jobs"
               />
             </div>
@@ -725,6 +758,17 @@ export function Workbench() {
               Add a posting
             </button>
           </div>
+          {ruledOut.length > 0 && (
+            <p className="hidden-note">
+              {showHidden
+                ? `Showing ${ruledOut.length} listing${ruledOut.length === 1 ? '' : 's'} your preferences rule out.`
+                : `${ruledOut.length} listing${ruledOut.length === 1 ? '' : 's'} hidden: roles you avoid or companies you skip.`}{' '}
+              <button className="btn quiet small" onClick={() => setShowHidden((v) => !v)}>
+                {showHidden ? 'Hide them' : 'Show'}
+              </button>{' '}
+              <Link href="/profile">Edit in Profile</Link>
+            </p>
+          )}
           {activeChips.length > 0 && (
             <ul className="tag-list active-chips" aria-label="Active filters">
               {activeChips.map((c) => (
@@ -898,7 +942,7 @@ export function Workbench() {
               {jobs.length === 0 ? (
                 <>
                   <h3>No jobs yet</h3>
-                  <p>Start with New search, or ask Claude: “Find machine learning engineer jobs in Bangalore from the last week.”</p>
+                  <p>Start with New search, or ask Claude: “Using Jobhunt, find {titleIdeas[0] ? `${titleIdeas[0]} jobs` : 'jobs that fit my profile'} posted in the last week.”</p>
                 </>
               ) : scopeSearch && scopeSearch.jobs === 0 ? (
                 <>
@@ -1127,6 +1171,20 @@ export function Workbench() {
               </p>
             )}
 
+            {detail && (
+              <OutreachPanel
+                key={detail.id}
+                jobId={detail.id}
+                title={detail.title}
+                company={detail.company}
+                initial={detail.outreach}
+                onSaved={(o) => {
+                  const cur = cache.current.get(detail.id);
+                  if (cur) cache.current.set(detail.id, { ...cur, outreach: o });
+                }}
+              />
+            )}
+
             {detail && detail.description.length < 400 && (
               <p className="notice">
                 This source returned only a short description. For a better draft, open the posting, copy the full text, and use <b>Add a posting</b>.
@@ -1180,11 +1238,11 @@ export function Workbench() {
               <label className="field" htmlFor="kw">
                 Roles or skills
               </label>
-              <TagInput id="kw" values={kw} onChange={setKw} placeholder="machine learning engineer" suggestions={titleIdeas} />
+              <TagInput id="kw" values={kw} onChange={setKw} placeholder={titleIdeas[0] || 'Job title or skills'} suggestions={titleIdeas} />
               <label className="field" htmlFor="loc">
                 Places
               </label>
-              <TagInput id="loc" values={loc} onChange={setLoc} placeholder="Bangalore, India" />
+              <TagInput id="loc" values={loc} onChange={setLoc} placeholder="City or country" />
               {kw.length * Math.max(1, loc.length) > 1 && (
                 <p className="hint">{kw.length * Math.max(1, loc.length)} searches per source (every role in every place).</p>
               )}

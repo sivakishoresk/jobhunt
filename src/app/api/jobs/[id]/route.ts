@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { withUser, bodyJson } from '@/lib/http';
-import { getJob, setJobState, setJobNotes, JOB_STATES } from '@/lib/jobs';
+import { getJob, setJobState, setJobNotes, setOutreach, JOB_STATES } from '@/lib/jobs';
+import { getProfile } from '@/lib/profile';
+import { OutreachInputSchema, mergeOutreach } from '@/lib/outreach';
 import { setReferral } from '@/lib/scoring';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +15,7 @@ export async function GET(req: Request, { params }: Ctx) {
   });
 }
 
-const Patch = z.object({ state: z.enum(JOB_STATES).optional(), notes: z.string().max(5000).optional(), referral: z.number().min(0).max(1).optional() });
+const Patch = z.object({ state: z.enum(JOB_STATES).optional(), notes: z.string().max(5000).optional(), referral: z.number().min(0).max(1).optional(), outreach: OutreachInputSchema.optional() });
 
 export async function PATCH(req: Request, { params }: Ctx) {
   return withUser(req, async (me) => {
@@ -22,6 +24,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (p.state) await setJobState(me.uid, [id], p.state);
     if (p.notes !== undefined) await setJobNotes(me.uid, id, p.notes);
     if (p.referral !== undefined) await setReferral(me.uid, id, p.referral);
+    if (p.outreach) {
+      const job = await getJob(me.uid, id);
+      if (!job) return Response.json({ error: 'Job not found.' }, { status: 404 });
+      // Re-checked on every save, so fixing a line clears its warning.
+      const outreach = mergeOutreach(await getProfile(me.uid), job, job.outreach, p.outreach);
+      await setOutreach(me.uid, id, outreach);
+      return Response.json({ ok: true, outreach });
+    }
     return Response.json({ ok: true });
   });
 }

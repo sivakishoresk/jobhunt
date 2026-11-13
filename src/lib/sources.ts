@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { kvGet, kvSet, ukey } from './db';
+import { boardRoles } from './target';
 
 /** One scraper run: a single role and a single place. */
 export interface RunQuery {
@@ -98,9 +99,9 @@ export const PRESETS: Preset[] = [
   {
     id: 'yc_tqm',
     label: 'Y Combinator · tqm',
-    note: 'Work at a Startup listings. No keyword search, so Jobhunt filters the results by your keywords. Returns at most 50 jobs per run.',
+    note: 'Work at a Startup listings. No keyword search, so Jobhunt picks the role category from what you search for ({{ycRoles}}: Engineering, Design or Sales; every category for anything else) and then filters the results by your keywords.',
     actor: 'tqm/ycombinator-scraper',
-    input: { maxJobs: '{{maxResults}}', roles: ['Engineering'], remoteOnly: '{{remote}}', failOnZeroResults: false },
+    input: { maxJobs: '{{maxResults}}', roles: '{{ycRoles}}', remoteOnly: '{{remote}}', failOnZeroResults: false },
     maxResults: 50,
     localKeywordFilter: true,
   },
@@ -119,7 +120,16 @@ function pick(id: string) {
 export async function getSources(uid: string): Promise<SourceConfig[]> {
   const stored = await kvGet<unknown>(ukey(uid, 'sources'));
   const parsed = z.array(SourceSchema).safeParse(stored);
-  return parsed.success && parsed.data.length ? parsed.data : DEFAULT_SOURCES;
+  return parsed.success && parsed.data.length ? parsed.data.map(upgradeSource) : DEFAULT_SOURCES;
+}
+
+/** Sources saved while the YC preset only ever asked for engineering jobs now follow the search instead. */
+function upgradeSource(s: SourceConfig): SourceConfig {
+  const roles = (s.input as { roles?: unknown } | null)?.roles;
+  if (s.actor === 'tqm/ycombinator-scraper' && Array.isArray(roles) && roles.length === 1 && roles[0] === 'Engineering') {
+    return { ...s, input: { ...(s.input as object), roles: '{{ycRoles}}' } };
+  }
+  return s;
 }
 
 export async function saveSources(uid: string, sources: unknown): Promise<SourceConfig[]> {
@@ -154,6 +164,7 @@ export function renderInput(template: unknown, q: RunQuery, maxResults: number):
     remote: q.remote,
     days: q.days ?? '',
     linkedinSearchUrl: linkedinSearchUrl(q),
+    ycRoles: boardRoles(q.keywords),
   };
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') {

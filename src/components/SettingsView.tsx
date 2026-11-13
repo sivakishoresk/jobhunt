@@ -125,7 +125,7 @@ export function SettingsView() {
           </p>
         )}
         <p className="hint" style={{ maxWidth: '65ch' }}>
-          Each source runs an Apify actor. Actors change over time, so if a source returns nothing or odd fields, use <b>Test</b> to see what the actor sends back and adjust its input below. The values <code>{'{{keywords}}'}</code>, <code>{'{{location}}'}</code>, <code>{'{{maxResults}}'}</code>, <code>{'{{remote}}'}</code> and <code>{'{{linkedinSearchUrl}}'}</code> are filled in for each search.
+          Each source runs an Apify actor. Actors change over time, so if a source returns nothing or odd fields, use <b>Test</b> to see what the actor sends back and adjust its input below. The values <code>{'{{keywords}}'}</code>, <code>{'{{location}}'}</code>, <code>{'{{maxResults}}'}</code>, <code>{'{{remote}}'}</code>, <code>{'{{linkedinSearchUrl}}'}</code> and <code>{'{{ycRoles}}'}</code> (the Y Combinator role category that fits what you searched for) are filled in for each search.
         </p>
         <div className="grid2" style={{ maxWidth: '40rem' }}>
           <div><label className="field" htmlFor="tk">Test with keywords</label><input id="tk" type="text" value={testKw} onChange={(e) => setTestKw(e.target.value)} /></div>

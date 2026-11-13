@@ -49,11 +49,17 @@ export const PreferencesSchema = z.object({
   remoteOk: z.boolean().default(true),
   salaryFloor: sd.describe('Lowest pay worth taking, in the currency you think in, e.g. "INR 30 LPA" or "USD 150k".'),
   blockedCompanies: z.array(s.min(1)).max(50).default([]),
-  avoidRoles: z.array(s.min(1)).max(20).default([]).describe('Kinds of role you do not want, e.g. "sales engineer".'),
+  avoidRoles: z.array(s.min(1)).max(20).default([]).describe('Kinds of role you do not want, e.g. "sales engineer". Listings whose title contains one are hidden.'),
   priorities: sd.describe('What you want from the next job, in a sentence or two. Used to judge growth and mission.'),
   baseRate: z.number().min(0.005).max(0.5).nullable().default(null).describe('Your own callback rate once you know it (0.04 = 4 in 100 applications). Null uses the default.'),
 });
 export type Preferences = z.infer<typeof PreferencesSchema>;
+
+/** The role being aimed for. Claude works it out from the resume; the person can edit it. Empty means "infer it from the titles". */
+export const TargetSchema = z.object({
+  function: sd.describe('The job function in plain words, e.g. "Product management", "Machine learning engineering", "B2B sales", "Nursing".'),
+  alsoCalled: z.array(s.min(1)).max(12).default([]).describe('Other titles the same job goes by, used to recognise matching postings, e.g. ["Product Owner", "Program Manager"].'),
+});
 
 export const ProfileSchema = z.object({
   basics: BasicsSchema.default(() => BasicsSchema.parse({})),
@@ -65,6 +71,7 @@ export const ProfileSchema = z.object({
   publications: z.array(PublicationSchema).default([]),
   jobTitles: z.array(s.min(1)).max(5).default([]),
   preferences: PreferencesSchema.default(() => PreferencesSchema.parse({})),
+  target: TargetSchema.default(() => TargetSchema.parse({})),
 });
 export type Profile = z.infer<typeof ProfileSchema>;
 
@@ -93,6 +100,11 @@ const PreferencesPatchSchema = z.object({
   baseRate: z.number().min(0.005).max(0.5).nullable().optional().describe('Own callback rate, 0.04 = 4 in 100 applications. null uses the default.'),
 });
 
+const TargetPatchSchema = z.object({
+  function: s.optional().describe('The job function this person is aiming for, in plain words, read from their resume: e.g. "Product management", "Machine learning engineering", "Corporate finance".'),
+  alsoCalled: z.array(s.min(1)).max(12).optional().describe('Other titles the same job is advertised under, e.g. ["Product Owner", "Technical Product Manager"].'),
+});
+
 export const ProfilePatchSchema = z.object({
   basics: BasicsPatchSchema.optional().describe('Merged field by field: send only the fields that change.'),
   skills: z.array(s).optional(),
@@ -103,6 +115,7 @@ export const ProfilePatchSchema = z.object({
   publications: z.array(PublicationSchema).optional(),
   jobTitles: z.array(s.min(1)).max(5).optional().describe('Up to 5 job titles that fit this profile, used to search for jobs.'),
   preferences: PreferencesPatchSchema.optional().describe('Scoring preferences. Merged field by field: only the fields you send change.'),
+  target: TargetPatchSchema.optional().describe('The role being aimed for, worked out from the resume. Merged field by field.'),
 });
 
 const PREFIX = { experience: 'exp', projects: 'proj', education: 'edu', achievements: 'ach', publications: 'pub' } as const;
@@ -142,7 +155,7 @@ export async function saveProfile(uid: string, patch: unknown): Promise<Profile>
   const defined: Record<string, unknown> = Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined));
   // basics and preferences merge field by field. Claude never sees email, phone or links, so a
   // basics update from Claude must not blank them; fields that are not sent keep their saved value.
-  for (const k of ['basics', 'preferences'] as const) {
+  for (const k of ['basics', 'preferences', 'target'] as const) {
     if (p[k]) defined[k] = { ...current[k], ...Object.fromEntries(Object.entries(p[k] as Record<string, unknown>).filter(([, v]) => v !== undefined)) };
   }
   const next = assignIds(ProfileSchema.parse({ ...current, ...defined }));

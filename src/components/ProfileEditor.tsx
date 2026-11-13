@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Profile } from '@/lib/profile';
 import { TagInput, api, useToast } from './bits';
 import { profileYears } from '@/lib/fit';
+import { effectiveTarget } from '@/lib/target';
 
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 
@@ -45,6 +46,7 @@ export function ProfileEditor() {
   }
 
   const empty = !p.basics.name && !p.experience.length;
+  const aim = effectiveTarget(p);
 
   return (
     <div className="page">
@@ -54,7 +56,7 @@ export function ProfileEditor() {
       </p>
       {empty && (
         <p className="notice">
-          Fastest way to fill this in: paste your current resume into a Claude chat with the Jobhunt connector on and say “Fill in my Jobhunt profile from this resume. Copy facts exactly, put awards and ranks under scholastic achievements, and suggest up to 5 matching job titles.” Then check the result here.
+          Fastest way to fill this in: paste your current resume into a Claude chat with the Jobhunt connector on and say “Fill in my Jobhunt profile from this resume. Copy facts exactly, put awards, ranks and certifications under achievements, work out the role I am aiming for, and suggest up to 5 matching job titles.” Then check the result here.
         </p>
       )}
 
@@ -62,7 +64,7 @@ export function ProfileEditor() {
         <h2>Basics</h2>
         <div className="grid2">
           <div><label className="field" htmlFor="b-name">Name</label><input id="b-name" type="text" value={p.basics.name} onChange={(e) => basics('name', e.target.value)} /></div>
-          <div><label className="field" htmlFor="b-head">Headline</label><input id="b-head" type="text" value={p.basics.headline} onChange={(e) => basics('headline', e.target.value)} placeholder="AI engineer working on LLM reasoning" /></div>
+          <div><label className="field" htmlFor="b-head">Headline</label><input id="b-head" type="text" value={p.basics.headline} onChange={(e) => basics('headline', e.target.value)} placeholder="One line on what you do" /></div>
           <div><label className="field" htmlFor="b-mail">Email</label><input id="b-mail" type="text" value={p.basics.email} onChange={(e) => basics('email', e.target.value)} /></div>
           <div><label className="field" htmlFor="b-ph">Phone</label><input id="b-ph" type="text" value={p.basics.phone} onChange={(e) => basics('phone', e.target.value)} /></div>
           <div><label className="field" htmlFor="b-loc">Location</label><input id="b-loc" type="text" value={p.basics.location} onChange={(e) => basics('location', e.target.value)} /></div>
@@ -77,8 +79,26 @@ export function ProfileEditor() {
 
       <section>
         <h2>Job titles to search for</h2>
-        <TagInput id="titles" values={p.jobTitles} onChange={(v) => change((x) => ({ ...x, jobTitles: v }))} placeholder="Machine Learning Engineer" max={5} />
+        <TagInput id="titles" values={p.jobTitles} onChange={(v) => change((x) => ({ ...x, jobTitles: v }))} placeholder={aim.function || 'A job title, as postings word it'} max={5} />
         <p className="hint">Up to 5. When Claude fills in your profile from a resume it suggests titles that fit; edit them freely. They show up as one-click suggestions when you search for jobs.</p>
+      </section>
+
+      <section>
+        <h2>Target role</h2>
+        <p className="hint" style={{ maxWidth: '60ch' }}>
+          The kind of job you are aiming for. Scores, relevant years and which postings count as a match are all judged against it. Claude works it out from your resume; change it here if you are moving into a different field.
+        </p>
+        <label className="field" htmlFor="tg-fn">Job function</label>
+        <input
+          id="tg-fn"
+          type="text"
+          value={p.target.function}
+          placeholder={aim.source === 'inferred' ? `Read from your titles: ${aim.function}` : 'For example: Product management'}
+          onChange={(e) => change((x) => ({ ...x, target: { ...x.target, function: e.target.value } }))}
+        />
+        <label className="field" htmlFor="tg-also">Also advertised as</label>
+        <TagInput id="tg-also" values={p.target.alsoCalled} onChange={(v) => change((x) => ({ ...x, target: { ...x.target, alsoCalled: v } }))} placeholder="Another title for the same job" max={12} />
+        <p className="hint">Other titles the same job goes by. A posting with one of these in its title counts as a match for your role.</p>
       </section>
 
       <section>
@@ -102,11 +122,11 @@ export function ProfileEditor() {
           </div>
           <div>
             <label className="field" htmlFor="pr-floor">Lowest pay worth taking</label>
-            <input id="pr-floor" type="text" value={p.preferences.salaryFloor} placeholder="INR 30 LPA, or USD 150k" onChange={(e) => pref({ salaryFloor: e.target.value })} />
+            <input id="pr-floor" type="text" value={p.preferences.salaryFloor} placeholder="Amount and currency, per year" onChange={(e) => pref({ salaryFloor: e.target.value })} />
           </div>
           <div>
             <label className="field" htmlFor="pr-auth">Work authorisation</label>
-            <input id="pr-auth" type="text" value={p.preferences.workAuthorization} placeholder="India citizen; needs sponsorship for the US" onChange={(e) => pref({ workAuthorization: e.target.value })} />
+            <input id="pr-auth" type="text" value={p.preferences.workAuthorization} placeholder="Where you can work without sponsorship" onChange={(e) => pref({ workAuthorization: e.target.value })} />
           </div>
           <div>
             <label className="field" htmlFor="pr-rate">Your callback rate, if you know it</label>
@@ -123,16 +143,17 @@ export function ProfileEditor() {
           </div>
         </div>
         <label className="field" htmlFor="pr-loc">Locations that work for you</label>
-        <TagInput id="pr-loc" values={p.preferences.locations} onChange={(v) => pref({ locations: v })} placeholder="Bengaluru" max={10} />
+        <TagInput id="pr-loc" values={p.preferences.locations} onChange={(v) => pref({ locations: v })} placeholder="City or country" max={10} />
         <label className="check" style={{ marginTop: '0.6rem' }}>
           <input type="checkbox" checked={p.preferences.remoteOk} onChange={(e) => pref({ remoteOk: e.target.checked })} /> Remote is fine
         </label>
         <label className="field" htmlFor="pr-block">Companies to skip</label>
         <TagInput id="pr-block" values={p.preferences.blockedCompanies} onChange={(v) => pref({ blockedCompanies: v })} placeholder="Company name" max={50} />
         <label className="field" htmlFor="pr-avoid">Kinds of role to avoid</label>
-        <TagInput id="pr-avoid" values={p.preferences.avoidRoles} onChange={(v) => pref({ avoidRoles: v })} placeholder="sales engineer" max={20} />
+        <TagInput id="pr-avoid" values={p.preferences.avoidRoles} onChange={(v) => pref({ avoidRoles: v })} placeholder="A title you do not want" max={20} />
+        <p className="hint">New listings with one of these in the title, or from a company you skip, are hidden from your job list and never scored.</p>
         <label className="field" htmlFor="pr-pri">What you want from the next job</label>
-        <textarea id="pr-pri" rows={2} value={p.preferences.priorities} placeholder="Research-heavy post-training work with strong mentors" onChange={(e) => pref({ priorities: e.target.value })} />
+        <textarea id="pr-pri" rows={2} value={p.preferences.priorities} placeholder="A sentence or two: the work, the team, what you want to learn" onChange={(e) => pref({ priorities: e.target.value })} />
       </section>
 
       <section>
@@ -207,8 +228,8 @@ export function ProfileEditor() {
       </section>
 
       <section>
-        <h2>Scholastic achievements</h2>
-        <p className="hint">Awards, ranks, scholarships, olympiads and other academic honours. Each goes onto a resume word for word.</p>
+        <h2>Achievements and certifications</h2>
+        <p className="hint">Awards, certifications, ranks, scholarships and other honours. Each goes onto a resume word for word; Claude names the section to suit the role.</p>
         {p.achievements.map((e, i) => (
           <div className="entry" key={e.id ?? i}>
             <div className="entry-head">

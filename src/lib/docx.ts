@@ -9,6 +9,7 @@ import {
   TextRun,
 } from 'docx';
 import type { ResumeDoc } from './drafts';
+import { layoutOf, type SectionKey } from './layout';
 
 const FONT = 'Cambria';
 const PAGE_W = 11906; // A4 in twips
@@ -74,44 +75,32 @@ export async function resumeDocx(r: ResumeDoc): Promise<Buffer> {
   c.push(new Paragraph({ alignment: AlignmentType.LEFT, children: [new TextRun({ text: r.name, bold: true, font: FONT, size: 36 })] }));
   if (r.headline) c.push(new Paragraph({ children: runs(r.headline, { size: 22 }) }));
   if (r.contact.length) c.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: r.contact.join('  |  '), font: FONT, size: 19, color: '444444' })] }));
-  if (r.summary) {
-    c.push(heading('Summary'));
-    c.push(new Paragraph({ children: runs(r.summary) }));
-  }
-  if (r.skills.length) {
-    c.push(heading('Skills'));
-    c.push(new Paragraph({ children: runs(r.skills.join(', ')) }));
-  }
-  if (r.experience.length) {
-    c.push(heading('Experience'));
-    for (const e of r.experience) {
-      c.push(lineWithDates(`${e.title}, ${e.company}`, dates(e.start, e.end)));
-      if (e.location) c.push(new Paragraph({ children: runs(e.location, { italics: true, size: 19 }) }));
-      e.bullets.forEach((b) => c.push(bullet(b)));
-    }
-  }
-  if (r.projects.length) {
-    c.push(heading('Projects'));
-    for (const p of r.projects) {
-      c.push(lineWithDates(p.name, dates(p.start, p.end)));
-      if (p.link) c.push(new Paragraph({ children: runs(p.link, { size: 19 }) }));
-      p.bullets.forEach((b) => c.push(bullet(b)));
-    }
-  }
-  if (r.education.length) {
-    c.push(heading('Education'));
-    for (const e of r.education) {
-      c.push(lineWithDates(`${e.degree}, ${e.school}`, dates(e.start, e.end)));
-      if (e.detail) c.push(new Paragraph({ children: runs(e.detail, { size: 19 }) }));
-    }
-  }
-  if (r.achievements?.length) {
-    c.push(heading('Scholastic Achievements'));
-    r.achievements.forEach((a) => c.push(bullet(a)));
-  }
-  if (r.publications.length) {
-    c.push(heading('Publications'));
-    r.publications.forEach((p) => c.push(bullet(p)));
+  const sections: Record<SectionKey, () => Paragraph[]> = {
+    summary: () => (r.summary ? [new Paragraph({ children: runs(r.summary) })] : []),
+    skills: () => (r.skills.length ? [new Paragraph({ children: runs(r.skills.join(', ')) })] : []),
+    experience: () =>
+      r.experience.flatMap((e) => [
+        lineWithDates(`${e.title}, ${e.company}`, dates(e.start, e.end)),
+        ...(e.location ? [new Paragraph({ children: runs(e.location, { italics: true, size: 19 }) })] : []),
+        ...e.bullets.map(bullet),
+      ]),
+    projects: () =>
+      r.projects.flatMap((p) => [
+        lineWithDates(p.name, dates(p.start, p.end)),
+        ...(p.link ? [new Paragraph({ children: runs(p.link, { size: 19 }) })] : []),
+        ...p.bullets.map(bullet),
+      ]),
+    education: () =>
+      r.education.flatMap((e) => [
+        lineWithDates(`${e.degree}, ${e.school}`, dates(e.start, e.end)),
+        ...(e.detail ? [new Paragraph({ children: runs(e.detail, { size: 19 }) })] : []),
+      ]),
+    achievements: () => (r.achievements ?? []).map(bullet),
+    publications: () => r.publications.map(bullet),
+  };
+  for (const sec of layoutOf(r.layout)) {
+    const body = sections[sec.key]();
+    if (body.length) c.push(heading(sec.title), ...body);
   }
   const doc = new Document({ numbering, creator: r.name, title: `${r.name} resume`, sections: [page(c)] });
   return Packer.toBuffer(doc);

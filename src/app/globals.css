@@ -683,3 +683,18 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em
   .chip { min-height: 2.15rem; }
   .tabs button, .past-item { min-height: 2.75rem; }
 }
+
+/* ---- LinkedIn messages ---- */
+.outreach { margin: 1.5rem 0 0; padding: 1rem 1.1rem 1.1rem; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); }
+.editor-side .outreach { margin-top: 0.8rem; background: var(--card); }
+.outreach-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.3rem 1rem; }
+.outreach-head h3 { font-size: 1.05rem; }
+.outreach-item { margin-top: 0.9rem; }
+.outreach-label { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; }
+.outreach-label label { font-weight: 600; font-size: 0.86rem; color: var(--ink-2); flex: 1; min-width: 0; }
+.outreach-label .count { font-size: 0.8rem; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.outreach-label .count.over { color: var(--bad); font-weight: 700; }
+.outreach textarea { background: var(--card); }
+.outreach-check { margin: 0.35rem 0 0; padding: 0.3rem 0.6rem; border-left: 3px solid var(--flag); background: var(--card); font-size: 0.86rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.outreach-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.9rem; }
+.hidden-note { margin: 0.6rem 0 0; font-size: 0.86rem; color: var(--ink-2); }

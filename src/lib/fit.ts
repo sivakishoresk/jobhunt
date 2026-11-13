@@ -6,26 +6,29 @@
 import { z } from 'zod';
 
 export const LOCATIONS = ['remote', 'match', 'same_country', 'relocate', 'incompatible', 'unknown'] as const;
-export const SENIORITY = ['intern', 'junior', 'mid', 'senior', 'staff', 'lead'] as const;
+export const SENIORITY = ['intern', 'junior', 'mid', 'senior', 'staff', 'lead', 'director', 'executive'] as const;
+export const REQ_KINDS = ['tool', 'skill', 'domain', 'soft'] as const;
 export const TIERS = ['core', 'required', 'preferred'] as const;
 export type Effort = 'A' | 'B' | 'C' | 'skip';
 
 export const ReqSchema = z.object({
-  skill: z.string().min(1).max(80).describe('The requirement, e.g. "LLM fine-tuning".'),
+  skill: z.string().min(1).max(80).describe('The requirement in a few words, e.g. "SQL", "roadmap ownership", "B2B SaaS", "stakeholder management".'),
+  kind: z.enum(REQ_KINDS).optional().describe('tool = a named tool, language or certificate (must appear in the profile); skill = a method or capability; domain = an industry or product area; soft = a way of working. Anything but tool needs basis.'),
   tier: z.enum(TIERS).describe('core = what the role is mainly about (1 or 2 per posting); required = other stated must-haves; preferred = nice-to-haves.'),
   evidence: z.number().min(0).max(1).describe('How well the PROFILE proves it: 1 led/shipped with a result, recent; 0.7 substantial work; 0.5 used, shallow or only listed; 0.3 adjacent; 0 nothing.'),
-  basis: z.string().max(200).optional().describe('Profile id or title that proves it, e.g. "exp-1". Needed for evidence above 0.3 on anything the profile never names.'),
+  basis: z.string().max(200).optional().describe('Profile id that proves it, e.g. "exp-1" or "proj-2", and a few words. Needed for evidence above 0.5 on any skill, domain or soft requirement, and above 0.3 on a tool the profile never names.'),
 });
 
 export const AssessmentSchema = z.object({
   job_id: z.string(),
   reqs: z.array(ReqSchema).max(20).default([]),
-  min_years: z.number().min(0).max(40).nullable().optional().describe('Years of experience the posting asks for; null if it states none. Defaults to the number read from the text.'),
+  min_years: z.number().min(0).max(40).nullable().optional().describe('Years of experience the posting asks for IN THIS KIND OF WORK ("6+ years, 3+ in product" is 3 for a product role); null if it states none. Defaults to the number read from the text.'),
+  relevant_experience: z.array(z.string().max(20)).max(30).optional().describe('Ids of the profile experience entries (exp-1, ...) whose work counts as experience in this job\'s function. Years are counted from these only, so a product role counts product jobs and not earlier engineering ones. Send [] if none counts; omit only when all of it counts.'),
   seniority: z.enum(SENIORITY).optional().describe('Level of the role, judged from the title AND the responsibilities (owns roadmap, mentors, leads = senior or above).'),
-  edge: z.number().min(0).max(1).default(0).describe('How strongly one specific, verifiable achievement in the profile (paper in the field, shipped or open-sourced work, competition win) is directly relevant. 0 if none.'),
+  edge: z.number().min(0).max(1).default(0).describe('How strongly one specific, verifiable achievement in the profile is directly relevant: a launch or result with a number, a published paper, a recognised award or certification, a portfolio piece, open-sourced work. 0 if none.'),
   edge_basis: z.string().max(300).optional().describe('Which profile entry the edge comes from (id and a few words). Without it the edge is ignored.'),
   domain: z.number().min(0).max(1).describe('How close the work is to what the profile has done, 0 to 1.'),
-  role: z.number().min(0).max(1).describe('How well the job title and role type match what the user is targeting, 0 to 1.'),
+  role: z.number().min(0).max(1).describe('How well the job title and role type match what the user is targeting (profile target.function, jobTitles and preferences), 0 to 1. A lookalike title in another function scores low.'),
   location: z.enum(LOCATIONS).default('unknown').describe('Against preferences.locations and remoteOk.'),
   visa_ok: z.boolean().nullable().optional().describe('false if the posting needs work authorisation the profile lacks (see preferences.workAuthorization); null if unclear.'),
   applicants: z.number().int().min(0).nullable().optional().describe('Only if the posting shows an applicant count.'),
@@ -40,11 +43,12 @@ export type Assessment = z.infer<typeof AssessmentSchema>;
 /** What jobs_to_score hands Claude so every session fills the fields the same way. */
 export const RUBRIC = `Score with score_jobs({assessments:[...]}) - do NOT invent a 0-100 number; the server computes it from your judgments.
 For each job:
-1. reqs: the 3-10 requirements that would decide the hire. Mark 1-2 as tier "core" (what the role is mainly about: the title and first responsibilities), stated must-haves as "required", nice-to-haves as "preferred". Skip boilerplate.
-2. evidence per requirement, from the PROFILE ONLY: 1.0 led or shipped it with a result, recently; 0.7 substantial work in a job or project; 0.5 used it but shallow, or only listed in skills; 0.3 adjacent or transferable; 0 nothing there. Give basis (profile id) when the profile never names the skill.
-3. min_years from the posting (null if not stated) and seniority from the title AND responsibilities.
-4. edge (0-1) plus edge_basis: only for a specific, verifiable achievement in the profile that is directly relevant (a paper in the field, shipped or open-sourced work, a competition win). No basis, no edge.
-5. domain and role (0-1): closeness of the work and of the job type to the profile and preferences.
+0. First settle what job this is: its function (engineering, product, design, sales, finance, operations, research, ...) from the title and the first responsibilities, whatever the profile's own field is. Judge everything below against that function.
+1. reqs: the 3-10 requirements that would decide the hire. Mark 1-2 as tier "core" (what the role is mainly about: the title and first responsibilities), stated must-haves as "required", nice-to-haves as "preferred". Skip boilerplate. Give each a kind: tool (a named tool, language, certificate), skill (a method or capability), domain (an industry or product area) or soft (a way of working).
+2. evidence per requirement, from the PROFILE ONLY: 1.0 led or shipped it with a result, recently; 0.7 substantial work in a job or project; 0.5 used it but shallow, or only listed in skills; 0.3 adjacent or transferable; 0 nothing there. Always give basis (a profile id such as exp-1, and a few words) for skill, domain and soft requirements, and for any tool the profile never names: evidence without a real id is cut.
+3. min_years: the years asked in this kind of work (null if not stated). seniority from the title AND responsibilities. relevant_experience: the ids of the experience entries that count as experience in this job's function. Be strict: years in a neighbouring function (engineering for a product role, sales for a marketing role) do not count, though they can still earn evidence on single requirements.
+4. edge (0-1) plus edge_basis: only for one specific, verifiable achievement in the profile that is directly relevant to this job (a launch or result with a number, a paper, a recognised award or certification, a portfolio piece, open-sourced work). No basis, no edge.
+5. domain and role (0-1): closeness of the work to what the profile has done, and of the job type to what the user is targeting (target.function, jobTitles). A similar-sounding title in a different function scores low on role.
 6. location against preferences; visa_ok=false if the posting needs authorisation the profile lacks; applicants only if shown; comp, growth, mission from preferences (omit when you cannot tell).
 7. reasons and flags: short, plain, tied to the posting. A posting with a short or missing description gets a flag saying so.
 Be a strict hiring manager: look for the one reason to say no, and do not give evidence the profile does not show.`;
@@ -96,8 +100,8 @@ export function profileYears(p: { experience: { title: string; start: string; en
 // ---------- the model ----------
 
 const floor = (v: number) => Math.max(v, 0.05);
-const LEVEL: Record<string, number> = { intern: 0, junior: 1, mid: 2, senior: 3, staff: 4, lead: 4 };
-const levelOf = (yrs: number) => (yrs < 1 ? 0 : yrs < 3 ? 1 : yrs < 6 ? 2 : yrs < 9 ? 3 : 4);
+const LEVEL: Record<string, number> = { intern: 0, junior: 1, mid: 2, senior: 3, staff: 4, lead: 4, director: 5, executive: 6 };
+const levelOf = (yrs: number) => (yrs < 1 ? 0 : yrs < 3 ? 1 : yrs < 6 ? 2 : yrs < 9 ? 3 : yrs < 13 ? 4 : yrs < 18 ? 5 : 6);
 const LOCATION_OK = new Set(['remote', 'match', 'same_country', 'relocate', 'unknown']);
 
 /** Weighted geometric mean: one weak part drags the whole down, so a strength cannot hide a deal-breaker. */
@@ -199,7 +203,8 @@ export interface ScoreDetail extends Outcome {
   reqs: { skill: string; tier: string; evidence: number }[];
   edge: number;
   edge_basis: string;
-  inputs: { profile_years: number; min_years: number | null; days_old: number; applicants: number | null; location: string; visa_ok: boolean | null };
+  /** profile_years is the figure scored with; total_years is all paid experience, set when only part of it counted as relevant. */
+  inputs: { profile_years: number; total_years?: number; min_years: number | null; days_old: number; applicants: number | null; location: string; visa_ok: boolean | null };
   stored: Stored;
 }
 
@@ -211,6 +216,27 @@ export interface AssessCtx extends OutcomeCtx {
   referral: number;
   /** Lower-cased profile text, to check that claimed evidence exists. */
   profileText: string;
+  /** Every id in the profile (exp-1, proj-2, ...), so a cited basis has to be real. Without it any well-formed id is accepted. */
+  profileIds?: Set<string>;
+  /** The profile's experience entries, to count only the relevant ones. */
+  experience?: { id?: string; title: string; start: string; end: string }[];
+  now?: Date;
+}
+
+const ID_RE = /\b(?:exp|proj|edu|ach|pub)-\d+\b/g;
+
+/** Years to score with when only some of the experience counts for this job's function. */
+function relevantYears(ids: string[] | undefined, c: AssessCtx, flags: string[]): number {
+  if (!ids || !c.experience) return c.years;
+  const want = new Set(ids);
+  const known = c.experience.filter((e) => e.id && want.has(e.id));
+  const unknown = ids.filter((id) => !c.experience!.some((e) => e.id === id));
+  if (unknown.length) flags.push(`Experience ${unknown.join(', ')} is not in your profile, so it was not counted.`);
+  const total = experienceYears(c.experience, c.now);
+  const rel = experienceYears(known, c.now);
+  if (total <= 0 || rel >= total) return c.years; // nothing to count from dates, or all of it counts
+  // An override stands for the whole career, so it shrinks in the same proportion.
+  return Math.round(((c.years * rel) / total) * 10) / 10;
 }
 
 const significant = (s: string) => s.toLowerCase().split(/[^a-z0-9+#.]+/).filter((t) => t.length >= 3);
@@ -223,10 +249,21 @@ export function assess(a: Assessment, c: AssessCtx): { detail: ScoreDetail; flag
     let evidence = r.evidence;
     const toks = significant(r.skill);
     const named = !toks.length || toks.some((t) => c.profileText.includes(t));
-    const cited = /\b(exp|proj|edu|ach|pub)-\d+\b/.test(r.basis ?? '');
-    if (evidence > 0.3 && !named && !cited) {
-      evidence = 0.3;
-      flags.push(`Your profile does not name "${r.skill}", so it was counted as adjacent only.`);
+    const cited = ((r.basis ?? '').match(ID_RE) ?? []).some((id) => !c.profileIds || c.profileIds.has(id));
+    if ((r.kind ?? 'tool') === 'tool') {
+      // A tool is either written in the profile or it is not.
+      if (evidence > 0.3 && !named && !cited) {
+        evidence = 0.3;
+        flags.push(`Your profile does not name "${r.skill}", so it was counted as adjacent only.`);
+      }
+    } else if (!cited) {
+      // Skills, domains and ways of working are worded differently everywhere, so a word match proves
+      // little: strong evidence has to point at the profile entry that shows it.
+      const cap = named ? 0.5 : 0.3;
+      if (evidence > cap) {
+        evidence = cap;
+        flags.push(`"${r.skill}" was not tied to a specific entry in your profile, so it was counted as ${named ? 'mentioned only' : 'adjacent only'}.`);
+      }
     }
     return { skill: r.skill, tier: r.tier as string, evidence };
   });
@@ -239,7 +276,9 @@ export function assess(a: Assessment, c: AssessCtx): { detail: ScoreDetail; flag
 
   const minYears = a.min_years !== undefined ? a.min_years : c.postedMinYears;
   const sk = skillsPart(reqs);
-  const yrs = yearsPart(minYears, c.years, edge, a.seniority);
+  const years = relevantYears(a.relevant_experience, c, flags);
+  if (years < c.years) flags.push(`Only ${years} of your ${c.years} years are in this kind of work.`);
+  const yrs = yearsPart(minYears, years, edge, a.seniority);
   const qual = wgm([[sk.score, 0.45], [yrs, 0.25], [(a.domain + a.role) / 2, 0.3]]);
 
   let conf = 0.5 + 0.5 * Math.min(1, c.descChars / 1500);
@@ -275,7 +314,7 @@ export function assess(a: Assessment, c: AssessCtx): { detail: ScoreDetail; flag
       reqs,
       edge: r2(edge),
       edge_basis: edge > 0 ? (a.edge_basis ?? '').trim() : '',
-      inputs: { profile_years: c.years, min_years: minYears ?? null, days_old: Math.round(c.daysOld), applicants: a.applicants ?? null, location: a.location, visa_ok: a.visa_ok ?? null },
+      inputs: { profile_years: years, ...(years < c.years ? { total_years: c.years } : {}), min_years: minYears ?? null, days_old: Math.round(c.daysOld), applicants: a.applicants ?? null, location: a.location, visa_ok: a.visa_ok ?? null },
       stored,
     },
   };

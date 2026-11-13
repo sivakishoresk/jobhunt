@@ -5,6 +5,7 @@ import type { NormJob } from './normalize';
 import { extractYears } from './experience';
 import { currentRev } from './scoring';
 import type { ScoreDetail } from './fit';
+import { type Outreach, outreachOf } from './outreach';
 
 export const JOB_STATES = ['new', 'saved', 'applied', 'dismissed'] as const;
 export type JobState = (typeof JOB_STATES)[number];
@@ -95,6 +96,9 @@ export interface JobFilters {
   unscored?: boolean;
   /** Only jobs scored before the profile last changed. */
   staleOnly?: boolean;
+  /** Leave out listings the person's preferences rule out: a title pattern (see avoidPattern) and company names. */
+  avoidTitle?: string | null;
+  blockedCompanies?: string[];
   sort?: 'newest' | 'score' | 'worth' | 'company';
   limit?: number;
   offset?: number;
@@ -127,6 +131,9 @@ export async function listJobs(uid: string, f: JobFilters = {}): Promise<{ jobs:
     const range = `(min_years >= $${params.length - 1} AND min_years <= $${params.length})`;
     where.push(f.yearsUnstated === false ? range : `(${range} OR min_years IS NULL)`);
   }
+  if (f.avoidTitle) add('NOT (lower(title) ~ ?)', f.avoidTitle);
+  const blocked = (f.blockedCompanies ?? []).map((b) => b.trim().toLowerCase()).filter(Boolean);
+  if (blocked.length) add('NOT (lower(company) LIKE ANY(?::text[]))', blocked.map((b) => `%${b.replace(/[%_\\]/g, '\\$&')}%`));
   if (f.searchId) add('id IN (SELECT job_id FROM search_jobs WHERE search_id = ?)', f.searchId);
   if (f.searchId && (f.runRole || f.runPlace)) {
     const parts = ['r.search_id = ?'];
@@ -170,10 +177,12 @@ export interface JobFull extends JobSummary {
   score_detail: ScoreDetail | null;
   notes: string;
   applications: { id: string; status: string }[];
+  /** LinkedIn messages drafted for this job. */
+  outreach: Outreach;
 }
 
 export async function getJob(uid: string, id: string): Promise<JobFull | null> {
-  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, score_detail, notes FROM jobs WHERE id = $1 AND user_id = $2`, [id, uid]);
+  const rows = await q(`SELECT ${SUMMARY_COLS}, description, apply_url, score_reasons, score_flags, score_detail, notes, outreach FROM jobs WHERE id = $1 AND user_id = $2`, [id, uid]);
   if (!rows.length) return null;
   const r = rows[0];
   const apps = await q('SELECT id, status FROM applications WHERE job_id = $1 AND user_id = $2 ORDER BY created_at DESC', [id, uid]);
@@ -186,7 +195,13 @@ export async function getJob(uid: string, id: string): Promise<JobFull | null> {
     score_detail: r.score_detail?.v === 2 ? (r.score_detail as ScoreDetail) : null,
     notes: r.notes ?? '',
     applications: apps.map((a) => ({ id: a.id, status: a.status })),
+    outreach: outreachOf(r.outreach),
   };
+}
+
+export async function setOutreach(uid: string, id: string, outreach: Outreach): Promise<boolean> {
+  const rows = await q('UPDATE jobs SET outreach = $2::jsonb WHERE id = $1 AND user_id = $3 RETURNING id', [id, j(outreach), uid]);
+  return rows.length > 0;
 }
 
 export async function setJobState(uid: string, ids: string[], state: JobState): Promise<number> {

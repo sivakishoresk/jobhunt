@@ -7,8 +7,10 @@ import { assess, outcome, profileYears, type Assessment, type ScoreDetail } from
 
 /** Changes whenever something that affects scoring changes (not job titles, contact details or links). */
 export function profileRev(p: Profile): string {
-  const { basics, jobTitles: _t, ...rest } = p;
-  return sha256hex(JSON.stringify({ headline: basics.headline, summary: basics.summary, location: basics.location, ...rest })).slice(0, 12);
+  const { basics, jobTitles: _t, target, ...rest } = p;
+  // An unset target adds nothing, so scores made before targets existed stay current.
+  const aim = target?.function || target?.alsoCalled?.length ? { target } : {};
+  return sha256hex(JSON.stringify({ headline: basics.headline, summary: basics.summary, location: basics.location, ...rest, ...aim })).slice(0, 12);
 }
 
 export async function currentRev(uid: string): Promise<string> {
@@ -36,7 +38,10 @@ export async function saveAssessments(uid: string, items: Assessment[]): Promise
   const profile = await getProfile(uid);
   const rev = profileRev(profile);
   const years = profileYears(profile);
-  const profileText = JSON.stringify({ ...profile, preferences: undefined }).toLowerCase();
+  const profileText = JSON.stringify({ ...profile, preferences: undefined, target: undefined, jobTitles: undefined }).toLowerCase();
+  const profileIds = new Set(
+    [profile.experience, profile.projects, profile.education, profile.achievements, profile.publications].flatMap((list) => list.map((x) => x.id ?? '')).filter(Boolean),
+  );
   const rows = await q(
     `SELECT id, company, posted_at, first_seen, length(description) AS desc_len, min_years, referral
        FROM jobs WHERE user_id = $1 AND id = ANY($2::text[])`,
@@ -62,6 +67,8 @@ export async function saveAssessments(uid: string, items: Assessment[]): Promise
       descChars: Number(row.desc_len ?? 0),
       referral: Number(row.referral ?? 0),
       profileText,
+      profileIds,
+      experience: profile.experience,
     });
     const allFlags = [...flags, ...(a.flags ?? [])].slice(0, 6).map((x) => x.slice(0, 300));
     out.push({

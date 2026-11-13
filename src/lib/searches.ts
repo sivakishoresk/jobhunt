@@ -5,6 +5,8 @@ import { startRun, getRun, getItems, TERMINAL_FAIL, ApifyError } from './apify';
 import { normalizeItem, matchesKeywords, type NormJob } from './normalize';
 import { iso, listJobs, upsertJobs } from './jobs';
 import { apifyTokenFor, NEEDS_TOKEN } from './users';
+import { getProfile } from './profile';
+import { synonymsFor } from './target';
 
 const RUN_TIMEOUT_MIN = 15;
 
@@ -98,7 +100,12 @@ async function ingestRun(uid: string, token: string, run: Row, query: SearchQuer
       const n = normalizeItem(run.source, it);
       if (n) jobs.push(n);
     }
-    const kept = localFilter ? jobs.filter((x) => matchesKeywords(x, run.kw ?? asList(query.keywords).join(' '))) : jobs;
+    let kept = jobs;
+    if (localFilter) {
+      const kw = run.kw ?? asList(query.keywords).join(' ');
+      const also = synonymsFor(kw, await getProfile(uid));
+      kept = jobs.filter((x) => matchesKeywords(x, kw, also));
+    }
     const res = await upsertJobs(uid, searchId, kept, run.id);
     await q(`UPDATE search_runs SET status = 'done', found = $2, added = $3, finished_at = now() WHERE id = $1`, [
       run.id,
@@ -223,6 +230,7 @@ async function reattributeRuns(uid: string, searchId: string): Promise<void> {
   const sources = await getSources(uid);
   const token = (await apifyTokenFor(uid))?.token;
   if (!token) return;
+  const profile = await getProfile(uid);
   await Promise.all(
     runs.slice(0, MAX_RUNS).map(async (run) => {
       const flag = `reattr:${run.id}`;
@@ -234,7 +242,7 @@ async function reattributeRuns(uid: string, searchId: string): Promise<void> {
         for (const it of items) {
           const n = normalizeItem(run.source, it);
           if (!n) continue;
-          if (local && run.kw && !matchesKeywords(n, run.kw)) continue;
+          if (local && run.kw && !matchesKeywords(n, run.kw, synonymsFor(run.kw, profile))) continue;
           keys.add(n.dedupe_key);
         }
         if (keys.size) {

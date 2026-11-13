@@ -9,6 +9,8 @@ A private job-search workbench that you host yourself and connect to Claude.
 - **Experience.** Each posting's years of experience are read from its text (the highest requirement found; shown as "3–5 yrs" or "5+ yrs"). Filter by a range, and choose whether to keep postings that don't say. For LinkedIn you can also pick experience levels before searching, which LinkedIn applies before you are billed.
 - **Triage** with the keyboard: `j`/`k` move, `s` save, `x` dismiss, `a` mark applied, `u` undo, `/` filter, `?` help.
 - **Claude scores and drafts.** Claude reads your profile and the postings, scores fit, and saves a tailored resume and cover letter. You review and edit them in the app, then download DOCX or print to PDF.
+- **LinkedIn messages.** Next to the cover letter, Claude drafts a connection note, a message to the recruiter or hiring manager, and a referral ask. They are short and to the point, checked against LinkedIn's length limits, and you copy and send them yourself.
+- **Any profession.** The role you are aiming for is read from your profile, not built in. See [Any profession](#any-profession).
 - **Nothing is ever sent for you.** Statuses only record what you did.
 
 Claude never invents experience. It saves drafts by profile ids (`exp-1`, `proj-1`, …); the server fills in titles, employers and dates from your profile, and a checker flags any number, tool or employer in a draft that isn't in your profile or the posting.
@@ -66,6 +68,7 @@ Claude Code (command line) can use the OAuth flow too, or the fixed-token route:
 - "Search Jobhunt for … in … posted in the last 3 days. Score everything new and show the top five with reasons."
 - "Draft an application for the second one." Claude saves it and tells you where to review it. Read the **Gaps Claude found** box and any "check this" warnings.
 - "Score the jobs from my AI Research Engineer search." Claude finds the search by role (`list_searches`), pulls only its unscored jobs with descriptions (`jobs_to_score`), and saves the scores (`score_jobs`).
+- "Write LinkedIn messages for that job." Claude saves a connection note (200 characters, the free-account limit), a message and a referral ask with `save_outreach`. They appear under the job and on the application's **LinkedIn** tab with character counts and copy buttons. Warnings flag anything too long, filler such as "I hope you are well", a message with no ask, and facts that are not in your profile.
 - "Mark that application as sent."
 - If a source returned only a short description, open the posting, copy the text, use **Add a posting** in the app, then ask Claude to draft from that.
 
@@ -109,6 +112,17 @@ npm run dev
 
 With no `DATABASE_URL`, an embedded Postgres (PGlite) stores data in `.data/`. Claude can't reach `localhost`; use a tunnel such as Cloudflare Tunnel if you want to test the connector locally.
 
+## Any profession
+
+Nothing in Jobhunt assumes a particular job. What you are aiming for lives in the profile under **Target role**:
+
+- **Job function** (for example "Product management") and **Also advertised as** (other titles for the same job). When Claude fills in your profile from a resume it works these out and saves them with `update_profile`. Until then the function is inferred from your search titles or your latest job, and `get_profile` tells Claude to set it. Change it yourself when you are moving into a different field.
+- **Relevant years.** When Claude scores a job it lists which of your roles count as experience in that job's function (`relevant_experience`). Only those months are counted, so six years of engineering do not pass as six years of product management. The score breakdown shows "3.9 years of relevant experience (of your 8.3)".
+- **Evidence.** Each requirement has a kind. A tool (SQL, Figma, a certificate) must be named in your profile. A skill, domain or way of working ("stakeholder management", "B2B SaaS") is worded differently everywhere, so strong evidence has to cite the profile entry that shows it; an id that does not exist is ignored.
+- **Matching titles.** For sources that Jobhunt filters itself (Y Combinator), the last word of the role has to be in the posting's title and the rest in the title, tags or opening text, so "product manager" no longer brings back product designers. Titles from **Also advertised as** count too. The Y Combinator role category (`{{ycRoles}}`) follows what you search for: Engineering, Design or Sales, and every category for anything else.
+- **Hidden listings.** New listings whose title contains a role under **Kinds of role to avoid**, or that come from a company you skip, are hidden from the job list (a note above the list shows how many, with a Show button) and are never sent to Claude for scoring. Type `-word` in the filter box to leave out a word for now.
+- **Resume sections.** Claude can order and rename the sections of each draft (`sections`), for example experience first, or "Certifications & Awards" instead of "Scholastic Achievements". Drafts saved earlier print as before.
+
 ## Fit scores
 
 Claude does not pick a 0-100 number. For each job it sends structured judgments through `score_jobs` (the requirements, how well your profile proves each, years asked, domain and role match, seniority, location, visa, and how much you would want the job). The server computes:
@@ -123,12 +137,12 @@ Set your years override, work authorisation, locations, salary floor, blocked co
 ## Tests
 
 ```
-npm run test:unit   # scoring model and years parsing, no server needed
+npm run test:unit   # scoring model, years parsing, and role-neutral checks (three different professions), no server needed
 npm run build
 npm run test:e2e      # set E2E_SKIP_BROWSER=1 to skip the Playwright part
 ```
 
-This starts a mock Apify server and the built app, then checks the OAuth flow, all 16 tools, search, drafts, DOCX export, two accounts that cannot see each other's data, password change and reset, and the browser UI with Playwright (screenshots go to `test-output/`).
+This starts a mock Apify server and the built app, then checks the OAuth flow, all 17 tools, search, drafts, DOCX export, two accounts that cannot see each other's data, password change and reset, and the browser UI with Playwright (screenshots go to `test-output/`).
 
 ## Known limits
 
@@ -139,4 +153,4 @@ This starts a mock Apify server and the built app, then checks the OAuth flow, a
 
 ## Tools Claude gets
 
-`get_profile`, `update_profile`, `search_jobs`, `list_searches`, `get_search`, `list_jobs`, `get_job`, `add_job`, `jobs_to_score`, `score_jobs`, `set_job_state`, `check_draft`, `save_application`, `list_applications`, `get_application`, `set_application_status`.
+`get_profile`, `update_profile`, `search_jobs`, `list_searches`, `get_search`, `list_jobs`, `get_job`, `add_job`, `jobs_to_score`, `score_jobs`, `set_job_state`, `check_draft`, `save_application`, `save_outreach`, `list_applications`, `get_application`, `set_application_status`.

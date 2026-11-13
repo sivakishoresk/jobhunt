@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { Profile } from './profile';
-import { profileText } from './profile';
+import { factScanner, type Check, type JobContext } from './facts';
+import { OutreachInputSchema } from './outreach';
+import { SECTION_KEYS, layoutOf, type Section } from './layout';
 
 export interface ResumeDoc {
   name: string;
@@ -13,13 +15,11 @@ export interface ResumeDoc {
   education: { degree: string; school: string; start: string; end: string; detail: string }[];
   achievements: string[];
   publications: string[];
+  /** Order and headings of the sections. Missing on drafts saved before this existed (they print in the usual order). */
+  layout?: Section[];
 }
 
-export interface Check {
-  where: string;
-  text: string;
-  issue: string;
-}
+export type { Check, JobContext } from './facts';
 
 export const DraftInputSchema = z.object({
   job_id: z.string().min(1),
@@ -30,60 +30,18 @@ export const DraftInputSchema = z.object({
   experience: z.array(z.object({ profile_id: z.string(), bullets: z.array(z.string()).default([]) })).default([]),
   projects: z.array(z.object({ profile_id: z.string(), bullets: z.array(z.string()).default([]) })).default([]),
   education: z.array(z.string()).default([]),
-  achievements: z.array(z.string()).default([]).describe('Scholastic achievement ids from the profile (ach-1, ...). Copied word for word.'),
+  achievements: z.array(z.string()).default([]).describe('Achievement ids from the profile (ach-1, ...): awards, certifications, ranks. Copied word for word.'),
   publications: z.array(z.string()).default([]),
+  sections: z
+    .array(z.object({ key: z.enum(SECTION_KEYS), title: z.string().max(40).optional() }))
+    .max(SECTION_KEYS.length)
+    .optional()
+    .describe('Order and headings of the resume sections, chosen to suit this role: for example experience before skills for a management role, projects first for a new graduate, or {key:"achievements", title:"Certifications & Awards"}. Sections you leave out follow in the usual order; a section with nothing in it is not printed.'),
   cover_letter: z.string().default(''),
+  linkedin: OutreachInputSchema.optional().describe('Optional LinkedIn messages for this job, saved next to the application. See save_outreach for how to write them.'),
   gaps: z.array(z.string()).default([]),
 });
 export type DraftInput = z.infer<typeof DraftInputSchema>;
-
-export interface JobContext {
-  title: string;
-  company: string;
-  description: string;
-}
-
-const STOP = new Set(
-  `dear hello hi sincerely regards best kind thanks thank you your yours hiring team manager monday tuesday wednesday thursday friday saturday sunday january february march april may june july august september october november december present current the and for with this that from have has our we i my`
-    .split(' '),
-);
-
-function normNumber(tok: string): string {
-  return tok.toLowerCase().replace(/[$₹,\s]/g, '');
-}
-
-const NUM_RE = /(?<![A-Za-z0-9.])[$₹]?\d[\d,]*(?:\.\d+)?\s?(?:%|x|k|m|b|cr|lakhs?)?(?![A-Za-z0-9])/gi;
-const CAP_RE = /\b[A-Z][A-Za-z0-9+#.\-]{2,}\b/g;
-
-function numbersIn(s: string): string[] {
-  return (s.match(NUM_RE) ?? []).map(normNumber).filter((x) => x.length > 0);
-}
-
-function wordSet(s: string): Set<string> {
-  return new Set(
-    s
-      .split(/[^A-Za-z0-9+#.\-]+/)
-      .map((w) => w.toLowerCase().replace(/[.\-]+$/g, ''))
-      .filter(Boolean),
-  );
-}
-
-function suspiciousWords(text: string, known: Set<string>): string[] {
-  const out: string[] = [];
-  for (const line of text.split('\n')) {
-    if (/^\s*(dear|hello|hi)\b/i.test(line)) continue;
-    CAP_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = CAP_RE.exec(line))) {
-      const before = line.slice(0, m.index).trimEnd();
-      if (!before || /[.!?:\-•*]$/.test(before)) continue; // sentence or bullet start
-      const w = m[0].toLowerCase().replace(/[.\-]+$/g, '');
-      if (STOP.has(w) || known.has(w)) continue;
-      out.push(m[0]);
-    }
-  }
-  return [...new Set(out)];
-}
 
 export function buildDraft(profile: Profile, job: JobContext, input: DraftInput): { doc: ResumeDoc; errors: string[]; checks: Check[] } {
   const errors: string[] = [];
@@ -101,6 +59,7 @@ export function buildDraft(profile: Profile, job: JobContext, input: DraftInput)
     education: [],
     achievements: [],
     publications: [],
+    ...(input.sections?.length ? { layout: layoutOf(input.sections) } : {}),
   };
 
   for (const e of input.experience) {
@@ -143,20 +102,11 @@ export function buildDraft(profile: Profile, job: JobContext, input: DraftInput)
   }
 
   // ---- fact checks ----
-  const corpus = `${profileText(profile)}\n${job.title}\n${job.company}\n${job.description}`;
-  const knownNums = new Set(numbersIn(corpus));
-  const knownWords = wordSet(corpus);
-  const profLower = profileText(profile).toLowerCase();
-
+  const scanner = factScanner(profile, job);
   const scan = (where: string, text: string) => {
-    if (!text) return;
-    for (const n of new Set(numbersIn(text))) {
-      if (!knownNums.has(n)) checks.push({ where, text: n, issue: 'This number is not in your profile or the posting.' });
-    }
-    for (const w of suspiciousWords(text, knownWords)) {
-      checks.push({ where, text: w, issue: 'This name or term is not in your profile or the posting.' });
-    }
+    checks.push(...scanner(where, text));
   };
+  const profLower = JSON.stringify(profile).toLowerCase();
 
   scan('Summary', doc.summary === profile.basics.summary ? '' : doc.summary);
   scan('Headline', doc.headline === profile.basics.headline ? '' : doc.headline);

@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "mock:apify": "node scripts/mock-apify.mjs",
     "test:e2e": "node scripts/e2e.mjs",
-    "test:unit": "node --experimental-strip-types scripts/test-years.mjs && node --experimental-strip-types scripts/test-fit.mjs"
+    "test:unit": "node --experimental-strip-types scripts/test-years.mjs && node --experimental-strip-types scripts/test-fit.mjs && node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/test-roles.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.13",

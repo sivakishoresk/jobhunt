@@ -266,6 +266,7 @@ async function main() {
     const yc = log.find((l) => l.actor === 'tqm/ycombinator-scraper');
     eq(typeof yc.input.remoteOnly, 'boolean');
     eq(yc.input.maxJobs, 50);
+    eq(yc.input.roles, ['Engineering'], 'the YC role category follows the search');
   });
   await step('duplicates merged and the title-less item skipped', async () => {
     const r = await call('list_jobs', { state: 'all', source: 'linkedin', limit: 100 });
@@ -304,7 +305,7 @@ async function main() {
     eq(second.jobs, 12, 'second search returned the same 12 linkedin jobs');
     eq(second.new_jobs, 0);
     const first = r.find((x) => x.search_id === searchId);
-    ok(first.jobs >= 20, 'first search jobs ' + first.jobs);
+    eq(first.jobs, 17, 'first search: 12 from LinkedIn plus the 5 YC postings that are ML roles (plain "Founding Engineer" is not)');
     eq((await call('list_jobs', { search_id: search2, state: 'all', limit: 100 })).data.total, 12);
     eq((await call('list_jobs', { search_id: searchId, state: 'all', limit: 100 })).data.total, first.jobs);
   });
@@ -782,6 +783,74 @@ async function main() {
     eq((await jsonPost('/api/login', { username: 'sksiva', password: PASSWORD })).status, 200, 'other accounts are unaffected');
   });
   void aliceId;
+
+  console.log('\nAny profession');
+  await step('the target role is inferred until Claude sets it', async () => {
+    const p = (await call('get_profile')).data;
+    eq(p.target_in_use.source, 'inferred');
+    ok(p.target_in_use.function && /update_profile/.test(p.target_todo), JSON.stringify(p.target_in_use));
+    await call('update_profile', { target: { function: 'Machine learning engineering', alsoCalled: ['Applied Scientist'] } });
+    const p2 = (await call('get_profile')).data;
+    eq([p2.target_in_use.source, p2.target_in_use.function, p2.target_todo], ['profile', 'Machine learning engineering', undefined]);
+    ok(p2.basics.name === p.basics.name && p2.experience.length === p.experience.length, 'setting the target leaves the rest alone');
+  });
+  await step('a search outside engineering asks YC for every category, not engineering', async () => {
+    const r = await fetch(BASE + '/api/sources/test', { method: 'POST', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify({ source: (await (await fetch(BASE + '/api/sources', { headers: { cookie } })).json()).sources.find((x) => x.id === 'yc'), keywords: 'product manager', location: '' }) });
+    eq(r.status, 200);
+    const log = await (await fetch('http://localhost:4010/__log')).json();
+    const yc = log.filter((l) => l.actor === 'tqm/ycombinator-scraper').pop();
+    eq(yc.input.roles, []);
+  });
+  await step('roles the user avoids are hidden from lists and never offered for scoring', async () => {
+    const before = (await call('list_jobs', { state: 'all', limit: 100 })).data.total;
+    await call('update_profile', { preferences: { avoidRoles: ['founding ml engineer'] } });
+    const after = (await call('list_jobs', { state: 'all', limit: 100 })).data.total;
+    eq(before - after, 5, 'the five Founding ML Engineer postings');
+    eq((await call('list_jobs', { state: 'all', limit: 100, include_hidden: true })).data.total, before);
+    const s = (await call('jobs_to_score', { include_scored: true, state: 'all', limit: 25 })).data;
+    ok(s.jobs.length > 0 && s.jobs.every((j) => !/founding ml engineer/i.test(j.title)));
+    ok(s.experience_ids.length > 0 && s.target.function === 'Machine learning engineering');
+    await call('update_profile', { preferences: { avoidRoles: [] } });
+    eq((await call('list_jobs', { state: 'all', limit: 100 })).data.total, before);
+  });
+  await step('scoring counts only the experience that is relevant to the job', async () => {
+    const p = (await call('get_profile')).data;
+    const a = { job_id: jobs[0].id, reqs: [{ skill: 'Python', kind: 'tool', tier: 'core', evidence: 0.7 }, { skill: 'Mentoring', kind: 'soft', tier: 'required', evidence: 0.9, basis: 'exp-99' }], min_years: 3, domain: 0.8, role: 0.8, location: 'match' };
+    const r1 = (await call('score_jobs', { assessments: [a] })).data.results[0];
+    const r2 = (await call('score_jobs', { assessments: [{ ...a, relevant_experience: [p.experience[1].id] }] })).data.results[0];
+    ok(r2.fit < r1.fit, `${r2.fit} should be below ${r1.fit}`);
+    ok(r2.flags.some((f) => /years are in this kind of work/.test(f)) && r1.flags.some((f) => /Mentoring/.test(f)), JSON.stringify([r1.flags, r2.flags]));
+  });
+  await step('LinkedIn messages are saved on the job, checked and merged', async () => {
+    const jid = jobs[0].id;
+    const r = (await call('save_outreach', { job_id: jid, connect_note: 'x'.repeat(250), message: 'I hope this finds you well. I grew revenue 45% at Initech.' })).data;
+    const issues = r.warnings.map((w) => w.issue).join(' | ');
+    ok(r.saved && /free LinkedIn account/.test(issues) && /Pleasantry/.test(issues) && /no ask/.test(issues) && /not in your profile/.test(issues), issues);
+    const r2 = (await call('save_outreach', { job_id: jid, connect_note: 'Hi [Name], I am an AI engineer at Fabrikam Research and applied for this role. Glad to connect.', message: '' })).data;
+    eq(r2.warnings, [], 'a clean note has no warnings');
+    const g = (await call('get_job', { job_id: jid })).data;
+    eq([g.outreach.message, g.outreach.connect_note.startsWith('Hi [Name]')], ['', true]);
+    const web = await fetch(`${BASE}/api/jobs/${jid}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify({ outreach: { referral_ask: 'Would you be open to referring me?' } }) });
+    const saved = (await web.json()).outreach;
+    eq([saved.referral_ask, saved.connect_note.startsWith('Hi [Name]'), saved.checks.length], ['Would you be open to referring me?', true, 0]);
+    ok((await call('save_outreach', { job_id: jid })).isError, 'nothing to save is an error');
+  });
+  await step('a draft can order and rename resume sections and carry LinkedIn messages', async () => {
+    const p = (await call('get_profile')).data;
+    const r = (await call('save_application', {
+      job_id: jobs[2].id,
+      experience: [{ profile_id: p.experience[0].id }],
+      sections: [{ key: 'experience' }, { key: 'achievements', title: 'Certifications & Awards' }],
+      cover_letter: 'Dear team,\n\nI would like to apply.\n\nAsha',
+      linkedin: { message: 'Hi [Name], I applied for this role. Are you the right person to ask about it?' },
+    })).data;
+    ok(r.application_id && r.linkedin_saved, JSON.stringify(r));
+    const a = (await call('get_application', { application_id: r.application_id })).data;
+    eq(a.resume.layout.slice(0, 2).map((x) => x.title), ['Experience', 'Certifications & Awards']);
+    eq(a.resume.layout.length, 7);
+    eq((await fetch(`${BASE}/api/applications/${r.application_id}/docx?doc=resume`, { headers: { cookie } })).status, 200);
+    eq((await call('get_job', { job_id: jobs[2].id })).data.outreach.message.startsWith('Hi [Name]'), true);
+  });
 
   await client.close();
 

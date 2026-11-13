@@ -5,6 +5,7 @@ import type { AppFull, AppStatus } from '@/lib/applications';
 import type { ResumeDoc } from '@/lib/drafts';
 import { api, useToast } from './bits';
 import { LetterSheet, ResumeSheet, letterDate } from './sheets';
+import { OutreachForJob } from './Outreach';
 
 const STATUSES: AppStatus[] = ['draft', 'sent', 'interview', 'offer', 'rejected', 'withdrawn'];
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
@@ -12,7 +13,7 @@ const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 export function AppEditor({ id }: { id: string }) {
   const [app, setApp] = useState<AppFull | null>(null);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<'resume' | 'cover'>('resume');
+  const [tab, setTab] = useState<'resume' | 'cover' | 'linkedin'>('resume');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const { show, node } = useToast();
@@ -119,9 +120,16 @@ export function AppEditor({ id }: { id: string }) {
         <div className="tabs" role="tablist" style={{ marginTop: '1rem' }}>
           <button role="tab" aria-selected={tab === 'resume'} onClick={() => setTab('resume')}>Resume</button>
           <button role="tab" aria-selected={tab === 'cover'} onClick={() => setTab('cover')}>Cover letter</button>
+          <button role="tab" aria-selected={tab === 'linkedin'} onClick={() => setTab('linkedin')}>LinkedIn</button>
         </div>
 
-        {tab === 'cover' ? (
+        {tab === 'linkedin' ? (
+          app.job_id ? (
+            <OutreachForJob jobId={app.job_id} title={app.title} company={app.company} />
+          ) : (
+            <p className="hint">The job this application was written for is no longer in your list, so there is nowhere to keep LinkedIn messages for it.</p>
+          )
+        ) : tab === 'cover' ? (
           <>
             <label className="field" htmlFor="cl">Cover letter</label>
             <textarea id="cl" rows={18} value={app.cover_letter} onChange={(e) => edit((a) => ({ ...a, cover_letter: e.target.value }))} />
@@ -168,7 +176,7 @@ export function AppEditor({ id }: { id: string }) {
 
         <h2 style={{ fontSize: '1rem', marginTop: '1.1rem' }}>Export</h2>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <a className="btn small" target="_blank" rel="noopener noreferrer" href={`/print/${id}?doc=${tab}&auto=1`}>
+          <a className="btn small" target="_blank" rel="noopener noreferrer" href={`/print/${id}?doc=${tab === 'cover' ? 'cover' : 'resume'}&auto=1`}>
             PDF ({tab === 'cover' ? 'cover letter' : 'resume'})
           </a>
           <a className="btn small" href={`/api/applications/${id}/docx?doc=resume`}>Resume .docx</a>

@@ -71,6 +71,8 @@ const SCHEMA: string[] = [
   `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS referral real NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS min_years int`,
   `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS max_years int`,
+  // LinkedIn messages drafted for a job (connection note, direct message, referral ask).
+  `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS outreach jsonb`,
   `CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs(state)`,
   `CREATE INDEX IF NOT EXISTS jobs_first_seen_idx ON jobs(first_seen DESC)`,
   `CREATE TABLE IF NOT EXISTS search_jobs (

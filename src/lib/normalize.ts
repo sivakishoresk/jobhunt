@@ -37,7 +37,7 @@ function text(v: unknown): string {
 
 class Raw {
   private idx = new Map<string, unknown>();
-  constructor(public obj: Record<string, unknown>) {
+  constructor(obj: Record<string, unknown>) {
     for (const [k, v] of Object.entries(obj)) this.idx.set(norm(k), v);
   }
   raw(...aliases: string[]): unknown {
@@ -185,6 +185,12 @@ const SYNONYMS: [RegExp, string][] = [
   [/artificial[\s-]+intelligence/g, ' ai '],
   [/natural[\s-]+language[\s-]+processing/g, ' nlp '],
   [/large[\s-]+language[\s-]+models?/g, ' llm '],
+  [/user[\s-]+experience/g, ' ux '],
+  [/user[\s-]+interface/g, ' ui '],
+  [/human[\s-]+resources/g, ' hr '],
+  [/quality[\s-]+assurance/g, ' qa '],
+  [/\bsr\b\.?/g, ' senior '],
+  [/\bjr\b\.?/g, ' junior '],
 ];
 function canon(text: string): string {
   let t = text.toLowerCase();
@@ -192,13 +198,41 @@ function canon(text: string): string {
   return t;
 }
 
-export function matchesKeywords(job: NormJob, keywords: string): boolean {
-  const tokens = canon(keywords)
+const FILLER = new Set(['and', 'or', 'the', 'for', 'of', 'in', 'at', 'to', 'a']);
+/** Level words say how senior a role is, not what it is, so they never decide a match. */
+const LEVELS = new Set(['senior', 'junior', 'lead', 'staff', 'principal', 'associate', 'assistant', 'founding', 'head', 'chief', 'intern', 'entry', 'level']);
+const termsOf = (phrase: string) =>
+  canon(phrase)
     .split(/[\s,/]+/)
-    .filter((t) => t.length >= 2 && !['and', 'or', 'the', 'for', 'of', 'in'].includes(t));
+    .filter((t) => t.length >= 2 && !FILLER.has(t) && !LEVELS.has(t));
+
+/**
+ * Does this posting answer a search for `keywords`?
+ * A role is named in the title, so the last word of the phrase ("manager" in "product manager") has to be in the
+ * title and the rest somewhere in the title, tags or opening of the description. "Product manager" therefore no
+ * longer matches a product designer whose description mentions a manager. `alsoCalled` are other titles for the
+ * same job; they count only when the whole phrase is in the title. A search for skills still matches on tags.
+ */
+export function matchesKeywords(job: NormJob, keywords: string, alsoCalled: string[] = []): boolean {
+  const tokens = termsOf(keywords);
   if (!tokens.length) return true;
-  const hay = canon([job.title, job.company, job.tags.join(' '), job.description.slice(0, 1500)].join(' '));
-  const words = new Set(hay.split(/[^a-z0-9+#.]+/));
-  const hits = tokens.filter((t) => (t.length <= 3 ? words.has(t) : hay.includes(t))).length;
-  return hits >= Math.max(1, Math.ceil(tokens.length / 2));
+  const title = canon(job.title);
+  const tags = canon(job.tags.join(' '));
+  const body = canon([job.title, job.company, job.tags.join(' '), job.description.slice(0, 1500)].join(' '));
+  const split = (t: string) => new Set(t.split(/[^a-z0-9+#.]+/));
+  const titleWords = split(title);
+  const tagWords = split(tags);
+  const bodyWords = split(body);
+  const has = (hay: string, words: Set<string>, t: string) => (t.length <= 3 ? words.has(t) : hay.includes(t));
+  const inTitle = (t: string) => has(title, titleWords, t);
+
+  if (tokens.every(inTitle)) return true;
+  for (const other of alsoCalled) {
+    const ot = termsOf(other);
+    if (ot.length && ot.every(inTitle)) return true;
+  }
+  if (tokens.every((t) => has(tags, tagWords, t))) return true; // a skills search
+  if (tokens.length === 1) return has(body, bodyWords, tokens[0]);
+  const head = tokens[tokens.length - 1];
+  return inTitle(head) && tokens.slice(0, -1).every((t) => has(body, bodyWords, t));
 }

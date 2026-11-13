@@ -93,7 +93,7 @@ export function ScoreBreakdown({ job, onReferral, rescoreHref }: { job: JobFull;
         ))}
       </select>
       <p className="hint">
-        Counted {d.inputs.profile_years} years of your experience against {d.inputs.min_years == null ? 'no stated ask' : `${d.inputs.min_years}+ years asked`}.
+        Counted {d.inputs.profile_years} years of {d.inputs.total_years != null ? `relevant experience (of your ${d.inputs.total_years})` : 'your experience'} against {d.inputs.min_years == null ? 'no stated ask' : `${d.inputs.min_years}+ years asked`}.
         Callback chance is a rough estimate for ranking jobs, not a forecast. Confidence {Math.round(d.confidence * 100)}%.
       </p>
     </div>

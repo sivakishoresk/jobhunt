@@ -1,31 +1,17 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
+import { layoutOf, type SectionKey } from '@/lib/layout';
 import type { ResumeDoc } from '@/lib/drafts';
 import { renderBold } from '../lib/bold';
 
 const dates = (a: string, b: string) => [a, b].filter(Boolean).join(' – ');
 
 export function ResumeSheet({ doc }: { doc: ResumeDoc }) {
-  return (
-    <div className="sheet" aria-label="Resume preview">
-      <h1>{doc.name || 'Your name'}</h1>
-      {doc.headline && <div className="headline">{renderBold(doc.headline)}</div>}
-      {doc.contact.length > 0 && <div className="contact">{doc.contact.join('  |  ')}</div>}
-      {doc.summary && (
-        <>
-          <h2>Summary</h2>
-          <p>{renderBold(doc.summary)}</p>
-        </>
-      )}
-      {doc.skills.length > 0 && (
-        <>
-          <h2>Skills</h2>
-          <p>{doc.skills.join(', ')}</p>
-        </>
-      )}
-      {doc.experience.length > 0 && (
-        <>
-          <h2>Experience</h2>
-          {doc.experience.map((e, i) => (
+  const body: Record<SectionKey, ReactNode> = {
+    summary: doc.summary ? <p>{renderBold(doc.summary)}</p> : null,
+    skills: doc.skills.length > 0 ? <p>{doc.skills.join(', ')}</p> : null,
+    experience:
+      doc.experience.length > 0
+        ? doc.experience.map((e, i) => (
             <Fragment key={i}>
               <div className="line">
                 <strong>
@@ -40,13 +26,11 @@ export function ResumeSheet({ doc }: { doc: ResumeDoc }) {
                 ))}
               </ul>
             </Fragment>
-          ))}
-        </>
-      )}
-      {doc.projects.length > 0 && (
-        <>
-          <h2>Projects</h2>
-          {doc.projects.map((p, i) => (
+          ))
+        : null,
+    projects:
+      doc.projects.length > 0
+        ? doc.projects.map((p, i) => (
             <Fragment key={i}>
               <div className="line">
                 <strong>{p.name}</strong>
@@ -59,13 +43,11 @@ export function ResumeSheet({ doc }: { doc: ResumeDoc }) {
                 ))}
               </ul>
             </Fragment>
-          ))}
-        </>
-      )}
-      {doc.education.length > 0 && (
-        <>
-          <h2>Education</h2>
-          {doc.education.map((e, i) => (
+          ))
+        : null,
+    education:
+      doc.education.length > 0
+        ? doc.education.map((e, i) => (
             <Fragment key={i}>
               <div className="line">
                 <strong>
@@ -75,28 +57,37 @@ export function ResumeSheet({ doc }: { doc: ResumeDoc }) {
               </div>
               {e.detail && <div className="sub">{e.detail}</div>}
             </Fragment>
+          ))
+        : null,
+    achievements:
+      (doc.achievements?.length ?? 0) > 0 ? (
+        <ul>
+          {doc.achievements.map((a, i) => (
+            <li key={i}>{renderBold(a)}</li>
           ))}
-        </>
-      )}
-      {(doc.achievements?.length ?? 0) > 0 && (
-        <>
-          <h2>Scholastic Achievements</h2>
-          <ul>
-            {doc.achievements.map((a, i) => (
-              <li key={i}>{renderBold(a)}</li>
-            ))}
-          </ul>
-        </>
-      )}
-      {doc.publications.length > 0 && (
-        <>
-          <h2>Publications</h2>
-          <ul>
-            {doc.publications.map((p, i) => (
-              <li key={i}>{renderBold(p)}</li>
-            ))}
-          </ul>
-        </>
+        </ul>
+      ) : null,
+    publications:
+      doc.publications.length > 0 ? (
+        <ul>
+          {doc.publications.map((p, i) => (
+            <li key={i}>{renderBold(p)}</li>
+          ))}
+        </ul>
+      ) : null,
+  };
+  return (
+    <div className="sheet" aria-label="Resume preview">
+      <h1>{doc.name || 'Your name'}</h1>
+      {doc.headline && <div className="headline">{renderBold(doc.headline)}</div>}
+      {doc.contact.length > 0 && <div className="contact">{doc.contact.join('  |  ')}</div>}
+      {layoutOf(doc.layout).map((sec) =>
+        body[sec.key] ? (
+          <Fragment key={sec.key}>
+            <h2>{sec.title}</h2>
+            {body[sec.key]}
+          </Fragment>
+        ) : null,
       )}
     </div>
   );
