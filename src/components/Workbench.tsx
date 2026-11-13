@@ -25,6 +25,13 @@ function searchTitle(sx: SearchView): string {
   return `${termsText(sx.query.keywords)}${termsText(sx.query.location) ? ' in ' + termsText(sx.query.location) : ''}`;
 }
 
+type Side = 'rail' | 'detail';
+const PANE_LIMITS: Record<Side, [number, number]> = { rail: [180, 440], detail: [320, 800] };
+const LIST_MIN = 320; // never squeeze the job list below this
+const THREE_PANE = 1000; // keep in step with the 999px media query in globals.css
+const DRAWER_GUTTER = 48; // strip of list left visible beside the slide-in description
+const PANE_KEY: Record<Side, string> = { rail: 'jh.railW', detail: 'jh.detailW' };
+
 const claudeLink = (prompt: string) => `https://claude.ai/new?q=${encodeURIComponent(prompt)}`;
 
 function lsList(key: string): string[] {
@@ -83,6 +90,80 @@ export function Workbench() {
   const { show, node: toastNode } = useToast();
   const filterRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<{ id: string; prev: JobState } | null>(null);
+
+  // resizable panes (px; null = built-in default). Saved per device in localStorage.
+  const wbRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
+  const [railW, setRailW] = useState<number | null>(null);
+  const [detailW, setDetailW] = useState<number | null>(null);
+  const [dragging, setDragging] = useState<Side | null>(null);
+  const drag = useRef<{ side: Side; x: number; w: number; id: number } | null>(null);
+
+  useEffect(() => {
+    const r = Number(ls(PANE_KEY.rail));
+    const d = Number(ls(PANE_KEY.detail));
+    if (r > 0) setRailW(r);
+    if (d > 0) setDetailW(d);
+  }, []);
+  useEffect(() => {
+    if (dragging) return;
+    if (railW != null) ls(PANE_KEY.rail, String(railW));
+    if (detailW != null) ls(PANE_KEY.detail, String(detailW));
+  }, [railW, detailW, dragging]);
+
+  function paneWidth(side: Side) {
+    return (side === 'rail' ? railRef : detailRef).current?.getBoundingClientRect().width ?? 0;
+  }
+  function setPane(side: Side, px: number) {
+    const [lo, hi] = PANE_LIMITS[side];
+    const total = wbRef.current?.clientWidth ?? 0;
+    let max = hi;
+    if (total >= THREE_PANE) max = Math.min(hi, total - LIST_MIN - paneWidth(side === 'rail' ? 'detail' : 'rail'));
+    else if (total && side === 'rail') max = Math.min(hi, total - LIST_MIN);
+    else if (total) max = Math.min(hi, total - DRAWER_GUTTER); // narrow screens: the description is a slide-in drawer
+    const v = Math.round(Math.max(lo, Math.min(max, px)));
+    (side === 'rail' ? setRailW : setDetailW)(v);
+  }
+  function resizer(side: Side): React.HTMLAttributes<HTMLDivElement> {
+    const grow = side === 'rail' ? 1 : -1; // dragging right widens the searches column but narrows the description
+    const end = () => {
+      if (!drag.current) return;
+      drag.current = null;
+      setDragging(null);
+    };
+    return {
+      role: 'separator',
+      'aria-orientation': 'vertical',
+      'aria-label': side === 'rail' ? 'Resize searches panel' : 'Resize job description panel',
+      tabIndex: 0,
+      onPointerDown: (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { side, x: e.clientX, w: paneWidth(side), id: e.pointerId };
+        setDragging(side);
+      },
+      onPointerMove: (e) => {
+        const d = drag.current;
+        if (!d || d.side !== side || d.id !== e.pointerId) return;
+        setPane(side, d.w + grow * (e.clientX - d.x));
+      },
+      onPointerUp: end,
+      onPointerCancel: end,
+      onLostPointerCapture: end,
+      onKeyDown: (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 48 : 16) * (e.key === 'ArrowRight' ? 1 : -1);
+        setPane(side, paneWidth(side) + grow * step);
+      },
+      onDoubleClick: () => {
+        (side === 'rail' ? setRailW : setDetailW)(null);
+        ls(PANE_KEY[side], '');
+      },
+    };
+  }
 
   // search form
   const [kw, setKw] = useState<string[]>([]);
@@ -499,9 +580,13 @@ export function Workbench() {
   const running = search?.status === 'running';
 
   return (
-    <div className="wb">
+    <div
+      ref={wbRef}
+      className={`wb${detailOpen ? ' detail-open' : ''}${dragging ? ' dragging' : ''}`}
+      style={{ '--rail-w': railW != null ? `${railW}px` : undefined, '--detail-w': detailW != null ? `${detailW}px` : undefined } as React.CSSProperties}
+    >
       {/* ---------- searches ---------- */}
-      <aside className="rail" aria-label="Searches">
+      <aside ref={railRef} className="rail" aria-label="Searches">
         <div className="rail-head">
           <h2>
             Searches <small>{pastSearches.length} saved</small>
@@ -619,7 +704,7 @@ export function Workbench() {
                 type="search"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Filter by title, company, place or skill"
+                placeholder="Filter by title, company or skill"
                 aria-label="Filter jobs"
               />
             </div>
@@ -892,7 +977,7 @@ export function Workbench() {
       </section>
 
       {/* ---------- reading pane ---------- */}
-      <article className={`detail${detailOpen ? ' open' : ''}`} aria-label="Job details">
+      <article ref={detailRef} className={`detail${detailOpen ? ' open' : ''}`} aria-label="Job details">
         <button className="btn small quiet back-btn" onClick={() => setDetailOpen(false)}>
           ← Back to list
         </button>
@@ -1070,6 +1155,10 @@ export function Workbench() {
           </>
         )}
       </article>
+
+      {/* drag (mouse, finger or Pencil) or use the arrow keys; double-tap resets */}
+      <div className={`rz rz-rail${dragging === 'rail' ? ' active' : ''}`} {...resizer('rail')} />
+      <div className={`rz rz-detail${dragging === 'detail' ? ' active' : ''}`} {...resizer('detail')} />
 
       {newOpen && (
         <div className="dialog-back side" onClick={() => setNewOpen(false)}>
