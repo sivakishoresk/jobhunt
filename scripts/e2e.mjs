@@ -1034,6 +1034,18 @@ async function browserTests(cookie, appId) {
     await page.waitForSelector('.detail h2');
     await shot('02-workbench');
   });
+  await step('the LinkedIn box belongs to the job on screen: one box, for that company', async () => {
+    const rows = page.locator('.row-job');
+    for (const k of [0, 1, 2, 1, 3, 0]) {
+      await rows.nth(k).click();
+      const company = (await page.locator('.detail .co').innerText()).split(' · ')[0].trim();
+      await page.waitForFunction((c) => [...document.querySelectorAll('.detail .outreach-head a')].some((a) => a.textContent.trim() === `Find people at ${c}`), company, { timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(150);
+      const boxes = await page.locator('.detail .outreach-head').allInnerTexts();
+      eq(boxes.length, 1, `after opening row ${k}: ${JSON.stringify(boxes)}`);
+      ok(boxes[0].includes(`Find people at ${company}`), `row ${k} (${company}) shows ${JSON.stringify(boxes[0])}`);
+    }
+  });
   await step('text filter narrows the list and highlights matches', async () => {
     const before = await page.locator('.row-job').count();
     const company = (await page.locator('.row-job').nth(2).locator('.rj-sub').innerText()).split(' · ')[0].trim().split(/\s+/)[0];

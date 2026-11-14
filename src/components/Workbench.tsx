@@ -83,7 +83,7 @@ export function Workbench() {
   const [levels, setLevels] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<Sort>('newest');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<JobFull | null>(null);
+  const [fetched, setDetail] = useState<JobFull | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
@@ -475,6 +475,9 @@ export function Workbench() {
   }, [selectedId, jobs]);
 
   const selected = jobs.find((j) => j.id === selectedId) ?? null;
+  // Only ever the selected job's details: a response for another job (still loading, or refreshed after an
+  // action on it) must not fill this pane with that job's score, posting or LinkedIn messages.
+  const detail = fetched && fetched.id === selectedId ? fetched : null;
 
   // ---------- actions ----------
   async function setState(id: string, state: JobState, announce = true) {
@@ -1182,7 +1185,9 @@ export function Workbench() {
 
             {detail && (
               <OutreachPanel
-                key={detail.id}
+                // Not the bare id: the notes box below is keyed by job too, and two siblings with one key
+                // made React leave old LinkedIn boxes behind when the job changed.
+                key={`outreach-${detail.id}`}
                 jobId={detail.id}
                 title={detail.title}
                 company={detail.company}
@@ -1207,7 +1212,7 @@ export function Workbench() {
               Your notes
             </label>
             <textarea
-              key={selected.id}
+              key={`notes-${selected.id}`}
               id="notes"
               rows={3}
               defaultValue={detail?.notes ?? ''}
