@@ -148,7 +148,7 @@ This starts a mock Apify server and the built app, then checks the OAuth flow, a
 
 - Tested against a **mock** Apify, not live actors. The curious_coder input names (`urls`, `count`) are not confirmed; if a search errors or returns nothing, use **Test** in Settings and adjust the input there, or switch preset.
 - Wellfound is not included; it has no dependable scraper. Add any Apify actor as a custom source in Settings.
-- PDF is made with your browser's Print dialog (Save as PDF) from a print view; DOCX is generated on the server.
+- PDF: **Download PDF** is made on the server (`/api/applications/:id/pdf?doc=resume|cover&paper=a4|letter&pages=auto|1|2`) by opening the print view in headless Chromium (`@sparticuz/chromium` on Vercel; your installed Chrome or `CHROME_PATH` when run locally). The print view fits a resume to one full page or two full pages and says how many lines to cut or add when it cannot; the browser's Print dialog gives the same result. DOCX is generated on the server and is not page-fitted.
 - Vercel functions time out after 60 s. Searches run asynchronously and are polled, so long scrapes continue in the background.
 
 ## Tools Claude gets

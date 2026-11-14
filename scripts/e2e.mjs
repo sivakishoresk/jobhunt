@@ -23,6 +23,8 @@ const env = {
   APIFY_MAX_CHARGE_USD: '2',
   MCP_API_TOKEN: STATIC_TOKEN,
   LOCAL_DB_DIR: '.data/e2e-pglite',
+  // Server-side PDF uses an installed Chrome when not on Vercel.
+  CHROME_PATH: process.env.E2E_CHROME ?? process.env.CHROME_PATH ?? (() => { try { return require('playwright').chromium.executablePath(); } catch { return ''; } })(),
   MOCK_DELAY_MS: '4000',
 };
 fs.rmSync('.data/e2e-pglite', { recursive: true, force: true });
@@ -881,7 +883,8 @@ async function main() {
 
 async function browserTests(cookie, appId) {
   const { chromium } = require('playwright');
-  const browser = await chromium.launch();
+  // E2E_CHROME=/path/to/chrome uses an installed browser instead of the one Playwright downloads.
+  const browser = await chromium.launch(process.env.E2E_CHROME ? { executablePath: process.env.E2E_CHROME } : {});
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   const errors = [];
@@ -1140,6 +1143,129 @@ async function browserTests(cookie, appId) {
     await page.waitForSelector('.sheet h1');
     await page.pdf({ path: 'test-output/resume.pdf', format: 'A4' });
     ok(fs.statSync('test-output/resume.pdf').size > 5000);
+  });
+  // The page rule: a document comes out as 1 page, or 2 with the second one filled, on either paper.
+  // Anything else is said on screen instead of being printed as it falls. Shapes, not one person's resume.
+  const pdfPages = (file) => (fs.readFileSync(file, 'latin1').match(/\/Type\s*\/Page(?![a-zA-Z])/g) ?? []).length;
+  const patchApp = (body) => fetch(`${BASE}/api/applications/${appId}`, { method: 'PATCH', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const original = await (await fetch(`${BASE}/api/applications/${appId}`, { headers: { cookie } })).json();
+  const sentence = 'Coordinated the weekly handover between **three teams**, cut repeat requests by 18% and wrote the checklist that new starters now follow from their first day';
+  const shaped = (jobs, bullets, extras) => ({
+    ...original.resume,
+    summary: 'Twelve years across operations, people management and customer support, most recently running a regional service desk.',
+    experience: Array.from({ length: jobs }, (_, i) => ({ title: `Role ${i + 1}`, company: `Employer ${i + 1}`, location: 'Pune', start: `20${10 + i}`, end: `20${11 + i}`, bullets: Array.from({ length: bullets }, (_, k) => `${sentence} (${i + 1}.${k + 1}).`) })),
+    projects: [],
+    achievements: Array.from({ length: extras }, (_, k) => `Award ${k + 1} for service quality, regional round`),
+    publications: [],
+  });
+  const openPrint = async (paper, query = 'doc=resume') => {
+    await page.goto(`${BASE}/login`);
+    await page.evaluate((p) => { localStorage.setItem('jh.paper', p); localStorage.removeItem('jh.pages'); }, paper);
+    await page.goto(`${BASE}/print/${appId}?${query}`);
+    await page.waitForSelector('.paged[data-fit]:not([data-fit="pending"])');
+    return page.evaluate(() => {
+      const el = document.querySelector('.paged');
+      return { status: el.dataset.fit, pages: Number(el.dataset.pages), message: document.querySelector('.fitmsg').textContent };
+    });
+  };
+  /** In print layout: every sheet is the paper size and no text hangs below its bottom margin. */
+  const printedBoxes = async () => {
+    await page.emulateMedia({ media: 'print' });
+    const r = await page.evaluate(() =>
+      [...document.querySelectorAll('.sheet')].map((s) => {
+        const box = s.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(s).paddingBottom);
+        const lowest = Math.max(...[...s.querySelectorAll('[data-bid]')].map((b) => b.getBoundingClientRect().bottom));
+        return { w: box.width, h: box.height, spill: lowest - (box.bottom - pad) };
+      }),
+    );
+    await page.emulateMedia({ media: null });
+    return r;
+  };
+  const PAPER_PX = { a4: [793.7, 1122.5], letter: [816, 1056] };
+  for (const [name, resume, want] of [
+    ['a half-page resume', shaped(1, 2, 0), { pages: 1, status: 'short' }],
+    ['a one-page resume', shaped(3, 4, 2), { pages: 1, status: 'ok' }],
+    ['a resume between one and two pages', shaped(5, 4, 3), { pages: 2 }],
+    ['a two-page resume', shaped(7, 4, 4), { pages: 2 }],
+    ['a resume too long for two pages', shaped(12, 6, 6), { status: 'over' }],
+  ]) {
+    for (const paper of ['a4', 'letter']) {
+      await step(`${name} on ${paper}: whole pages, nothing spilling, PDF matches`, async () => {
+        eq((await patchApp({ resume })).status, 200);
+        const fitted = await openPrint(paper);
+        if (want.pages) eq(fitted.pages, want.pages, fitted.message);
+        if (want.status) eq(fitted.status, want.status, fitted.message);
+        ok(fitted.pages <= 2 || fitted.status === 'over', 'more than two pages must be reported: ' + fitted.message);
+        const boxes = await printedBoxes();
+        eq(boxes.length, fitted.pages);
+        for (const b of boxes) {
+          ok(Math.abs(b.w - PAPER_PX[paper][0]) < 1 && Math.abs(b.h - PAPER_PX[paper][1]) < 2, `sheet is the paper size: ${JSON.stringify(b)}`);
+          if (fitted.status !== 'over') ok(b.spill <= 1, `text stays inside the margins: ${JSON.stringify(b)}`);
+        }
+        const file = `test-output/fit-${name.replace(/[^a-z]+/g, '-')}-${paper}.pdf`;
+        await page.pdf({ path: file, preferCSSPageSize: true });
+        if (fitted.status !== 'over') eq(pdfPages(file), fitted.pages, 'the PDF has exactly the pages shown, no blank extra sheet');
+      });
+    }
+  }
+  await step('suggested trimming reaches one page, shows what it left out, and puts it back', async () => {
+    eq((await patchApp({ resume: shaped(5, 4, 3) })).status, 200);
+    const before = await openPrint('a4');
+    eq(before.pages, 2);
+    await page.click('button:has-text("Suggest what to leave out")');
+    await page.waitForSelector('.paged[data-pages="1"][data-fit="ok"]');
+    ok((await page.locator('.fitleft li').count()) > 0, 'the left-out bullets are listed');
+    await page.pdf({ path: 'test-output/fit-trimmed.pdf', preferCSSPageSize: true });
+    eq(pdfPages('test-output/fit-trimmed.pdf'), 1);
+    const saved = await (await fetch(`${BASE}/api/applications/${appId}`, { headers: { cookie } })).json();
+    eq(saved.resume.experience[0].bullets.length, 4, 'the saved resume is untouched');
+    await page.click('button:has-text("Put all back")');
+    await page.selectOption('.fitsel:has-text("Length") select', 'auto');
+    await page.waitForSelector('.paged[data-pages="2"]');
+  });
+  await step('the server makes the same PDF: page count, paper and options', async () => {
+    eq((await patchApp({ resume: shaped(3, 4, 2) })).status, 200);
+    const get = (q) => fetch(`${BASE}/api/applications/${appId}/pdf?${q}`, { headers: { cookie } });
+    const save = async (r, name) => { fs.writeFileSync(`test-output/${name}`, Buffer.from(await r.arrayBuffer())); return pdfPages(`test-output/${name}`); };
+    let r = await get('doc=resume&paper=letter');
+    eq([r.status, r.headers.get('content-type'), r.headers.get('x-jobhunt-fit'), r.headers.get('x-jobhunt-pages')], [200, 'application/pdf', 'ok', '1']);
+    ok(/attachment; filename=".+-resume\.pdf"/.test(r.headers.get('content-disposition')));
+    eq(await save(r, 'server-one-letter.pdf'), 1);
+    ok(fs.readFileSync('test-output/server-one-letter.pdf', 'latin1').includes('/MediaBox [0 0 612 792]'), 'US Letter paper');
+    eq((await patchApp({ resume: shaped(7, 4, 4) })).status, 200);
+    r = await get('doc=resume&paper=a4');
+    eq([r.status, r.headers.get('x-jobhunt-pages')], [200, '2']);
+    eq(await save(r, 'server-two-a4.pdf'), 2);
+    r = await get('doc=resume&pages=1');
+    eq(r.headers.get('x-jobhunt-fit'), 'over', 'asking for one page of a two-page resume is flagged, not hidden');
+    await r.arrayBuffer();
+    // Leaving bullets out of this file only, as the Download button does after "Suggest what to leave out".
+    const all = shaped(7, 4, 4).experience.flatMap((e) => e.bullets.slice(1)).map((b) => b.replace(/\*\*/g, ''));
+    r = await fetch(`${BASE}/api/applications/${appId}/pdf`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', origin: BASE }, body: JSON.stringify({ doc: 'resume', paper: 'a4', pages: '1', hidden: all }) });
+    eq([r.status, r.headers.get('x-jobhunt-pages')], [200, '1'], await r.clone().text().then((t) => t.slice(0, 200)));
+    eq(await save(r, 'server-trimmed.pdf'), 1);
+    r = await get('doc=cover');
+    eq([r.status, r.headers.get('x-jobhunt-pages'), r.headers.get('x-jobhunt-fit')], [200, '1', 'ok']);
+    eq(await save(r, 'server-cover.pdf'), 1);
+    eq((await get('paper=a3')).status, 400);
+    eq((await fetch(`${BASE}/api/applications/${appId}/pdf`)).status, 401, 'signed out');
+    eq((await fetch(`${BASE}/api/applications/a_nope/pdf`, { headers: { cookie } })).status, 404);
+  });
+  await step('Download PDF in the print view fetches the server file', async () => {
+    await openPrint('a4');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download PDF")')]);
+    ok(dl.suggestedFilename().endsWith('-resume.pdf'), dl.suggestedFilename());
+    await dl.saveAs('test-output/server-button.pdf');
+    eq(pdfPages('test-output/server-button.pdf'), 2);
+  });
+  await step('a cover letter prints on one page', async () => {
+    const fitted = await openPrint('letter', 'doc=cover');
+    eq([fitted.pages, fitted.status], [1, 'ok'], fitted.message);
+    await page.pdf({ path: 'test-output/fit-cover.pdf', preferCSSPageSize: true });
+    eq(pdfPages('test-output/fit-cover.pdf'), 1);
+    eq((await patchApp({ resume: original.resume })).status, 200);
+    await page.evaluate(() => localStorage.removeItem('jh.paper'));
   });
   await step('profile page loads the saved profile with ids kept', async () => {
     await page.goto(`${BASE}/profile`);

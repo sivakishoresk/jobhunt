@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import type { AppFull, AppStatus } from '@/lib/applications';
 import type { ResumeDoc } from '@/lib/drafts';
 import { api, useToast } from './bits';
-import { LetterSheet, ResumeSheet, letterDate } from './sheets';
+import { letterDate } from './sheets';
+import { LetterSheet, ResumeSheet } from './Paged';
 import { OutreachForJob } from './Outreach';
 import { hasOutreach } from '@/lib/outreach';
 
@@ -297,7 +298,7 @@ export function AppEditor({ id }: { id: string }) {
         <h2 style={{ fontSize: '1rem', marginTop: '1.1rem' }}>Export</h2>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <a className="btn small" target="_blank" rel="noopener noreferrer" href={`/print/${id}?doc=${tab}&auto=1`}>
-            PDF ({tab === 'cover' ? 'cover letter' : 'resume'})
+            Print view ({tab === 'cover' ? 'cover letter' : 'resume'})
           </a>
           <a className="btn small" href={`/api/applications/${id}/docx?doc=resume`}>Resume .docx</a>
           <a className="btn small" href={`/api/applications/${id}/docx?doc=cover`}>Cover letter .docx</a>
@@ -323,9 +324,9 @@ export function AppEditor({ id }: { id: string }) {
       </aside>
       <main className="editor-main">
         {tab === 'cover' ? (
-          <LetterSheet name={doc.name} contact={doc.contact} date={letterDate(app.updated_at)} company={app.company} body={app.cover_letter} />
+          <LetterSheet name={doc.name} contact={doc.contact} date={letterDate(app.updated_at)} company={app.company} body={app.cover_letter} pdf={dirty ? undefined : { id, doc: 'cover' }} />
         ) : (
-          <ResumeSheet doc={doc} />
+          <ResumeSheet doc={doc} storeKey={id} pdf={dirty ? undefined : { id, doc: 'resume' }} />
         )}
       </main>
       {node}

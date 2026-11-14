@@ -859,7 +859,7 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
   { q: 'A search says I need an Apify token.', a: <>Add yours under Settings → Your Apify account. Searches always run on the account of the person who asks.</> },
   { q: 'A job has only a short description.', a: <>Some sources give little text. Open the posting, copy the full text, use <b>Add a posting</b> in Jobhunt (or ask Claude to add it), and then ask for the draft.</> },
   { q: 'A search found nothing or looked odd.', a: <>Actors change over time. In Settings use <b>Test with 3 results</b> on that source to see the raw output, and adjust the actor input or pick another preset.</> },
-  { q: 'Can I get a PDF?', a: <>Yes. Open the draft, use the print view, and choose Save as PDF in your browser. The Word download is made on the server.</> },
+  { q: 'Can I get a PDF?', a: <>Yes. Open the draft and choose Download PDF: the server makes the file, so it is the same on every device. Choose the paper (A4 or US Letter) and the length first. The text is sized so the resume comes out as one full page, or two full pages, and you are told how many lines to cut or add when it cannot. Print or save as PDF in the print view does the same through your browser. The Word download is not page-fitted.</> },
 ];
 
 function Faq() {
